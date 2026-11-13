@@ -93,6 +93,7 @@ function config() {
     encoding: c.get<string>('encoding', 'shift_jis'),
     mismatch: c.get<MismatchMode>('lengthMismatch', 'lenient'),
     hiddenPattern: c.get<string>('hiddenFieldPattern', '^FILLER$'),
+    binaryEndian: c.get<'big' | 'little'>('binaryEndian', 'big'),
   };
 }
 
@@ -162,7 +163,7 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
 
   const cfg = config();
   const fileName = path.basename(uri.fsPath);
-  const session = new RdwSession(bytes, fileName, { encoding: cfg.encoding, mismatch: cfg.mismatch });
+  const session = new RdwSession(bytes, fileName, { encoding: cfg.encoding, mismatch: cfg.mismatch, binaryEndian: cfg.binaryEndian });
   const folder = vscode.workspace.getWorkspaceFolder(uri) ?? vscode.workspace.workspaceFolders?.[0];
   const store = new MappingStore(ctx, folder);
 
@@ -194,9 +195,11 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
   const nonce = Array.from({ length: 24 }, () => Math.floor(Math.random() * 36).toString(36)).join('');
   const js = web.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'main.js'));
   const css = web.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'main.css'));
+  // 表格的列宽、行位置通过行内 style 设置，必须允许 style-src 'unsafe-inline'，否则列宽失效、
+  // 被撑到几千像素。脚本仍然只允许带 nonce 的那一个。
   web.html = `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${web.cspSource}; script-src 'nonce-${nonce}';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${web.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="${css}"><title>RDW Viewer</title></head>
 <body><div id="app"></div><script nonce="${nonce}" src="${js}"></script></body></html>`;

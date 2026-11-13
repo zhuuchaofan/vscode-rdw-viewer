@@ -34,7 +34,17 @@
 
 ### copybook 支持范围
 
-支持：固定/自由格式、层级号、`FILLER`、`PIC X/A/9/S/V/Z…`、`SIGN … SEPARATE`、`OCCURS n`（展开为 `name(1)…`）、`COMP`/`COMP-3` 等（只计算长度，按十六进制显示）。
+支持：固定/自由格式、层级号、`FILLER`、`PIC X/A/9/S/V/Z…`、`SIGN … SEPARATE`、`OCCURS n`（展开为 `name(1)…`）。
+
+数值类 USAGE 会解码成可读的数值（右对齐显示，点击单元格可看原始字节）：
+
+| USAGE | 显示 |
+| --- | --- |
+| `COMP-3` / `PACKED-DECIMAL` | 十进制数，按 `V` 位置插入小数点，如 `PIC S9(5)V99 COMP-3` 的 `12 34 56 7C` → `+12345.67`。符号半字节 C/F/A/E 为正、D/B 为负；数字或符号半字节非法时回退为十六进制并标橙 |
+| `COMP` / `BINARY` / `COMP-4` / `COMP-5` | 定点二进制整数，字节序由 `rdwViewer.binaryEndian` 决定（默认 big） |
+| `COMP-1` / `COMP-2` | 4 / 8 字节浮点数 |
+
+有符号字段显示 `+` / `-`，无符号字段不带符号。
 
 不支持（会给出提示）：`REDEFINES`（忽略，不占位置）、`OCCURS DEPENDING ON`（按最大次数展开）、多个 `01`（只用第一个）。
 
@@ -44,6 +54,7 @@
 | --- | --- | --- |
 | `rdwViewer.encoding` | `shift_jis` | 默认字符编码 |
 | `rdwViewer.lengthMismatch` | `lenient` | 长度不一致时的处理方式 |
+| `rdwViewer.binaryEndian` | `big` | `COMP` / `BINARY` 字段的字节序（COMP-3 不受影响） |
 | `rdwViewer.hiddenFieldPattern` | `^FILLER$` | 「隐藏 FILLER 列」开关隐藏的字段名正则，如 `FILLER\|COMMA` |
 
 ## 开发

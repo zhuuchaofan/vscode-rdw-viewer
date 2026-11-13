@@ -176,7 +176,7 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 .c.f:hover { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 .c.f.w { background: rgba(217, 140, 31, 0.22); color: var(--vscode-editor-foreground); }
 .c.f.sel { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; z-index: 1; }
-.c.f.num { text-align: right; }
+.c.f.num, .hd.num { text-align: right; }
 
 .row.err .c { color: var(--err); background: rgba(229, 83, 75, 0.1); }
 .row.err .l { background: rgba(229, 83, 75, 0.2); }

@@ -79,3 +79,13 @@ test('REDEFINES 被忽略并给出警告；88 级被跳过；VALUE 不影响解�
   assert.equal(cb.totalLength, 5);
   assert.ok(cb.warnings.some((w) => w.includes('REDEFINES')));
 });
+
+test('V 之后的位数记为小数位数；字段带 USAGE', () => {
+  assert.equal(picInfo('S9(5)V99', 'COMP-3', false).scale, 2);
+  assert.equal(picInfo('9(3)', 'COMP-3', false).scale, 0);
+  const cb = parseCopybook('01 R. 05 A PIC S9(5)V99 COMP-3. 05 B PIC X(2).');
+  assert.deepEqual(cb.fields.map((f) => [f.name, f.usage, f.scale, f.length]), [
+    ['A', 'COMP-3', 2, 4],
+    ['B', 'DISPLAY', 0, 2],
+  ]);
+});

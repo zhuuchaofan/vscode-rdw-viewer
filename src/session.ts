@@ -6,6 +6,7 @@ import { RdwIndex, scanRdw, RDW_SIZE } from './rdw';
 import { Copybook } from './copybook';
 import { Banner, Column, MismatchMode, buildColumns } from './layout';
 import { SUPPORTED_ENCODINGS, createDecoder, sanitize, toHex } from './decode';
+import { decodeByUsage } from './numeric';
 
 export interface Group {
   key: string;
@@ -88,11 +89,12 @@ export class RdwSession {
   private decoder: TextDecoder;
   private encoding: string;
   private mismatch: MismatchMode;
+  private littleEndian: boolean;
 
   constructor(
     private readonly buf: Uint8Array,
     private readonly fileName: string,
-    opts: { encoding?: string; mismatch?: MismatchMode } = {}
+    opts: { encoding?: string; mismatch?: MismatchMode; binaryEndian?: 'big' | 'little' } = {}
   ) {
     this.encoding = opts.encoding ?? 'shift_jis';
     this.decoder = createDecoder(this.encoding) ?? createDecoder('shift_jis')!;
@@ -100,6 +102,7 @@ export class RdwSession {
       this.encoding = 'shift_jis';
     }
     this.mismatch = opts.mismatch ?? 'lenient';
+    this.littleEndian = opts.binaryEndian === 'little';
     this.index = scanRdw(buf);
     this.entryGroup = new Int32Array(this.index.count).fill(-1);
     this.buildGroups();
@@ -226,7 +229,15 @@ export class RdwSession {
     }
     const bytes = this.slice(entry, col);
     if (col.type === 'bin') {
-      return { text: toHex(bytes), warn: col.kind === 'partial' };
+      if (col.kind === 'partial') {
+        return { text: toHex(bytes), warn: true };
+      }
+      // COMP-3 / COMP 等解码成数值；内容不合法或不认识的 USAGE 回退为十六进制并标橙/不标橙
+      const d = decodeByUsage(bytes, col.usage, col.scale, col.signed, this.littleEndian);
+      if (!d) {
+        return { text: toHex(bytes), warn: false };
+      }
+      return d.ok ? { text: d.text, warn: false } : { text: toHex(bytes), warn: true };
     }
     const raw = this.decoder.decode(bytes);
     let warn = col.kind === 'partial' || col.kind === 'extra' || raw.includes('�');
