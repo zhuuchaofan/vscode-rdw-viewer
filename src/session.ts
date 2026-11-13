@@ -595,6 +595,21 @@ export class RdwSession {
     return gi >= 0 ? this.groups[gi] : undefined;
   }
 
+  /** 文件的全部字节（配合 bodyOffset / bodyLength 直接访问，避免为每条记录创建子数组） */
+  get raw(): Uint8Array {
+    return this.buf;
+  }
+
+  /** 记录正文在文件中的起始偏移 */
+  bodyOffset(entry: number): number {
+    return this.index.offsets[entry] + RDW_SIZE;
+  }
+
+  /** 记录正文的长度 */
+  bodyLength(entry: number): number {
+    return this.index.lengths[entry];
+  }
+
   /** 记录正文 */
   body(entry: number): Uint8Array {
     const base = this.index.offsets[entry] + RDW_SIZE;

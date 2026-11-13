@@ -6,6 +6,33 @@ import { parseCopybook } from '../src/copybook';
 import { dumpChars } from '../src/decode';
 import { rec, ascii } from './helpers';
 
+/** 旧实现（字符串键 + 队列）的简化版，用来对照按键配对的结果 */
+function referencePairs(a: string[], b: string[], keyLen: number): Array<[string | null, string | null]> {
+  const queue = new Map<string, number[]>();
+  b.forEach((r, j) => {
+    if (r.length < keyLen) return;
+    const k = r.slice(0, keyLen);
+    queue.get(k)?.push(j) ?? queue.set(k, [j]);
+  });
+  const match = a.map((r) => (r.length < keyLen ? -1 : queue.get(r.slice(0, keyLen))?.shift() ?? -1));
+  const used = new Set(match.filter((j) => j >= 0));
+  const out: Array<[string | null, string | null]> = [];
+  let nb = 0;
+  const flush = (upto: number) => {
+    for (; nb < upto; nb++) if (!used.has(nb)) out.push([null, b[nb]]);
+  };
+  a.forEach((r, i) => {
+    const j = match[i];
+    if (j >= 0 && j >= nb) {
+      flush(j);
+      nb = j + 1;
+    }
+    out.push([r, j >= 0 ? b[j] : null]);
+  });
+  flush(b.length);
+  return out;
+}
+
 const CPY = parseCopybook(`
   01 R.
      05 ID   PIC X(3).
@@ -157,4 +184,76 @@ test('dumpChars：Shift_JIS 双字节字符放在首字节，控制字符为 .',
   assert.deepEqual(dumpChars(bytes, dec), ['A', 'あ', '', 'ｱ', '.', '.', '.']);
   const u8 = new TextDecoder('utf-8');
   assert.deepEqual(dumpChars(Uint8Array.from([0xe3, 0x81, 0x82, 0x20]), u8), ['あ', '', '', ' ']);
+});
+
+test('按键配对：随机数据（重复键、缺失、乱序、过短的记录）与参照实现一致', () => {
+  let seed = 12345;
+  const rnd = (n: number) => {
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    return (seed >>> 8) % n;
+  };
+  const make = (n: number) =>
+    Array.from({ length: n }, (_, i) => {
+      if (rnd(25) === 0) return 'K'; // 比键短
+      return `K${String(rnd(40)).padStart(2, '0')}` + String(i % 7) + 'x'.repeat(rnd(3));
+    });
+  for (let round = 0; round < 30; round++) {
+    const ra = make(rnd(120));
+    const rb = make(rnd(120));
+    const sa = new RdwSession(Buffer.concat(ra.map((r) => rec(ascii(r)))), 'a.dat');
+    const sb = new RdwSession(Buffer.concat(rb.map((r) => rec(ascii(r)))), 'b.dat');
+    const c = new CompareSession(sa, sb);
+    c.configure('key', [{ start: 1, length: 3 }]);
+    const got: Array<[string | null, string | null]> = [];
+    const text = (s: RdwSession, e: number) => (e < 0 ? null : Buffer.from(s.body(e)).toString('latin1'));
+    for (let p = 0; p < c.getStats().pairs; p++) {
+      const pr = c.pair(p);
+      got.push([text(sa, pr.a), text(sb, pr.b)]);
+      const want = pr.a < 0 ? 'b' : pr.b < 0 ? 'a' : text(sa, pr.a) === text(sb, pr.b) ? 'same' : 'chg';
+      assert.equal(pr.st, want);
+    }
+    assert.deepEqual(got, referencePairs(ra, rb, 3), `round ${round}`);
+  }
+});
+
+test('多个键项目：各部分分别比较，不会因拼接而混淆', () => {
+  // 键 = 位置 1~2 + 位置 5~6
+  const a = new RdwSession(Buffer.concat([rec(ascii('AB..CD1')), rec(ascii('AB..CE2'))]), 'a.dat');
+  const b = new RdwSession(Buffer.concat([rec(ascii('AB!!CE2')), rec(ascii('AB!!CD9')), rec(ascii('ABCD..3'))]), 'b.dat');
+  const c = new CompareSession(a, b);
+  c.configure('key', [{ start: 1, length: 2 }, { start: 5, length: 2 }]);
+  const s = c.getStats();
+  assert.deepEqual([s.pairs, s.chg, s.a, s.b], [3, 2, 0, 1]);
+  assert.deepEqual([c.pair(0).b, c.pair(1).b], [1, 0]); // A 的两条分别对上 B 的第 2、1 条
+});
+
+test('configureAsync：结果与同步相同；取消时保留原来的结果', async () => {
+  const recs = (n: number, shift: number) =>
+    Buffer.concat(Array.from({ length: n }, (_, i) => rec(ascii(String((i + shift) % n).padStart(6, '0') + (i % 5 === 0 ? 'X' : 'Y')))));
+  const n = 60000;
+  const a = new RdwSession(recs(n, 0), 'a.dat');
+  const b = new RdwSession(recs(n, 7), 'b.dat');
+  const sync = new CompareSession(a, b);
+  sync.configure('key', [{ start: 1, length: 6 }]);
+
+  const c = new CompareSession(a, b, false);
+  assert.equal(c.getStats().pairs, 0); // 尚未比较
+  const seen: number[] = [];
+  assert.equal(await c.configureAsync('index', [], { onProgress: (f) => seen.push(f), sliceMs: 0 }), true);
+  const indexStats = c.getStats();
+  assert.equal(indexStats.pairs, n);
+  assert.ok(seen.length > 1);
+  assert.ok(seen.every((f, i) => f >= 0 && f <= 1 && (i === 0 || f >= seen[i - 1])));
+
+  // 第一次交回控制权时就取消：模式和结果都不变
+  let asked = 0;
+  assert.equal(await c.configureAsync('key', [{ start: 1, length: 6 }], { isCancelled: () => ++asked > 0, sliceMs: 0 }), false);
+  assert.equal(c.mode, 'index');
+  assert.deepEqual(c.getStats(), indexStats);
+
+  assert.equal(await c.configureAsync('key', [{ start: 1, length: 6 }]), true);
+  assert.equal(c.mode, 'key');
+  assert.deepEqual(c.getStats(), sync.getStats());
+  assert.deepEqual(c.getRows(false, 0, 200), sync.getRows(false, 0, 200));
+  assert.deepEqual(c.getRows(true, 0, 200), sync.getRows(true, 0, 200));
 });

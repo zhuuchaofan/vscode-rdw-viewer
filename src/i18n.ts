@@ -211,6 +211,8 @@ const zh = {
   'ext.cmp.manualTitle': '键项目的位置',
   'ext.cmp.manualPrompt': '从 1 开始的位置范围，多个用逗号分隔（例：1-10 或 1-3,8-10）',
   'ext.cmp.manualInvalid': '请输入如 1-10 或 1-3,8-10 的位置范围',
+  'ext.cmp.progress': '正在比较 {a} ⇄ {b}',
+  'ext.cmp.cancelled': '已取消比较。',
 };
 
 export type MessageKey = keyof typeof zh;
@@ -418,6 +420,8 @@ const ja: Record<MessageKey, string> = {
   'ext.cmp.manualTitle': 'キー項目の位置',
   'ext.cmp.manualPrompt': '1 から数えた位置の範囲。複数はカンマ区切り（例：1-10、1-3,8-10）',
   'ext.cmp.manualInvalid': '1-10 や 1-3,8-10 のように位置の範囲を入力してください',
+  'ext.cmp.progress': '{a} ⇄ {b} を比較中',
+  'ext.cmp.cancelled': '比較を中止しました。',
 };
 
 let dict: Record<MessageKey, string> = ja;
