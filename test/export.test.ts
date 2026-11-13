@@ -83,3 +83,8 @@ test('导出文件名后缀', () => {
   s.setDiscriminator(13, { start: 4, length: 2, type: 'text' });
   assert.deepEqual(s.groups.filter((g) => g.length === 13).map((g) => viewFileSuffix(s, g.key)), ['13_AB', '13_XY']);
 });
+
+test('控制字符图形在导出时还原为 ·（Shift_JIS 中为 ・），与之前的导出结果一致', async () => {
+  const { exportText } = await import('../src/export');
+  assert.equal(exportText('A␀B␡'), 'A·B·');
+});

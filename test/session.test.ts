@@ -375,3 +375,12 @@ test('同长度的多个 01：可以切换记录定义', () => {
   s.setLayout(4, '01', 'REC-B');
   assert.deepEqual((s.getRows('L4', 0, 1)[0] as RecRow).c, ['12', 'AB']);
 });
+
+test('控制字符显示为控制字符图形（␀ 等），与空格的标记区分', async () => {
+  const { sanitize } = await import('../src/decode');
+  assert.equal(sanitize('A\u0000B\r\n\u007f'), 'A␀B␍␊␡');
+  // 文字字段（指定了 COPY句）中的控制字符
+  const s = session(rec(Buffer.from([0x41, 0x00, 0x09, 0x42])));
+  s.setCopybook(4, { name: 't.cpy', copybook: parseCopybook('01 R. 05 T PIC X(4).') });
+  assert.equal((s.getRows('L4', 0, 1)[0] as RecRow).c[0], 'A␀␉B');
+});
