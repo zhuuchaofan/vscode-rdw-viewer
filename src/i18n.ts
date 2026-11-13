@@ -26,6 +26,7 @@ const zh = {
   'col.body': '(正文)',
   'col.extra': '(余り)',
   'banner.loadError': '长度 {len}：{error}',
+  'banner.autoPrefix': '【自动选择：工作区中只有「{name}」的长度与记录一致；可用「更换 copybook…」改选】',
   'banner.noCopybook': '长度 {len} 尚未指定 copybook，显示整条正文。',
   'banner.noFields': 'copybook「{name}」中没有解析出任何字段，显示整条正文。{warn}',
   'banner.records': '含 {n} 个 01 定义（{list}），选用 {name}。',
@@ -160,6 +161,8 @@ const zh = {
   'ui.layoutTitle': '同一区域的不同布局（REDEFINES），按所选布局显示字段',
   'ui.cellValue': '数值 {value}',
   // ---- HEX dump / 比较 ----
+  'ui.autoTag': '自动',
+  'ui.autoTagTitle': '按长度自动选择（尚未保存）',
   'ui.dumpToggle': 'HEX',
   'ui.dumpToggleTitle': '在下方显示所选记录的十六进制 dump',
   'ui.dumpRecord': '第 {n} 条 · 文件偏移 {off} · 正文 {len} 字节',
@@ -229,6 +232,7 @@ const ja: Record<MessageKey, string> = {
   'col.body': '(レコード全体)',
   'col.extra': '(余り)',
   'banner.loadError': 'レコード長 {len}：{error}',
+  'banner.autoPrefix': '【自動選択：ワークスペース内でレコード長と一致する COPY句は「{name}」だけです。「COPY句を変更…」で変更できます】',
   'banner.noCopybook': 'レコード長 {len} の COPY句が未指定のため、レコード全体を表示しています。',
   'banner.noFields': 'COPY句「{name}」から項目を解析できなかったため、レコード全体を表示しています。{warn}',
   'banner.records': '01 レベルの定義が {n} 個あります（{list}）。{name} を使用しています。',
@@ -362,6 +366,8 @@ const ja: Record<MessageKey, string> = {
   'ui.layoutTitle': '同じ領域の別レイアウト（REDEFINES）です。選択したレイアウトで項目を表示します',
   'ui.cellValue': '数値 {value}',
   // ---- HEX dump / 比較 ----
+  'ui.autoTag': '自動',
+  'ui.autoTagTitle': 'レコード長で自動選択しています（未保存）',
   'ui.dumpToggle': 'HEX',
   'ui.dumpToggleTitle': '選択したレコードの 16 進ダンプを下に表示します',
   'ui.dumpRecord': '{n} 件目 · ファイル位置 {off} · レコード本体 {len} バイト',

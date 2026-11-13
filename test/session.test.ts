@@ -384,3 +384,14 @@ test('控制字符显示为控制字符图形（␀ 等），与空格的标记�
   s.setCopybook(4, { name: 't.cpy', copybook: parseCopybook('01 R. 05 T PIC X(4).') });
   assert.equal((s.getRows('L4', 0, 1)[0] as RecRow).c[0], 'A␀␉B');
 });
+
+test('按长度自动选择的 copybook：提示条注明，init 中 auto=true', () => {
+  const s = session(Buffer.concat([rec(ascii('ABCD,123'))]));
+  s.setCopybook(8, { name: 'a.cpy', copybook: CPY }, undefined, undefined, true);
+  const g = s.init().groups[0];
+  assert.equal(g.auto, true);
+  assert.match(g.banner.text, /^【自动选择/);
+  s.setCopybook(8, { name: 'a.cpy', copybook: CPY });
+  assert.equal(s.init().groups[0].auto, false);
+  assert.doesNotMatch(s.init().groups[0].banner.text, /自动选择/);
+});

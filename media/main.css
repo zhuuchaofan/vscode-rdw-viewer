@@ -377,3 +377,4 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 .cmpdump .dcol + .dcol { border-left: 3px solid var(--grid-strong); }
 .dtitle { font-family: var(--vscode-font-family); padding-top: 2px; }
 .cmpdump { overflow: hidden; }
+.tab .auto { font-size: 0.85em; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; opacity: 0.75; }

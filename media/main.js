@@ -174,7 +174,8 @@
     const d = state.init;
     const parts = d.groups.map((g) => {
       const cb = g.copybookName
-        ? `<span class="cb" title="${esc(g.copybookName)}">✔ ${esc(g.copybookName)}</span>`
+        ? `<span class="cb" title="${esc(g.copybookName)}">✔ ${esc(g.copybookName)}</span>` +
+          (g.auto ? ` <span class="auto" title="${esc(S('autoTagTitle'))}">${esc(S('autoTag'))}</span>` : '')
         : `<span class="nocb">${esc(S('noCopybook'))}</span>`;
       const val = g.value !== null ? ` <span class="dv" title="${esc(g.discLabel || '')}">= ${esc(g.value)}</span>` : '';
       return `<button class="tab ${state.view === g.key ? 'active' : ''}" data-v="${esc(g.key)}"><span class="gdot${groupColor(g.key)}"></span>${esc(S('bytes', { n: g.length }))}${val} <small>× ${g.count}</small>${cb}</button>`;

@@ -121,6 +121,9 @@ class MappingStore {
     const k = value === undefined ? String(length) : value;
     if (uri) {
       map[k] = this.toStored(uri);
+    } else if (value === undefined) {
+      // 空字符串 = 明确指定「不使用 copybook」，不再自动选择
+      map[k] = '';
     } else {
       delete map[k];
     }
@@ -174,14 +177,10 @@ function config() {
   };
 }
 
-async function pickCopybook(length: number, store: MappingStore, value?: string): Promise<vscode.Uri | undefined> {
-  interface Item extends vscode.QuickPickItem {
-    uri?: vscode.Uri;
-    browse?: boolean;
-    match: boolean;
-  }
+/** 工作区中的 copybook 及其总长度（无法解析的为 -1） */
+async function scanCopybooks(): Promise<Array<{ uri: vscode.Uri; total: number }>> {
   const files = await vscode.workspace.findFiles(COPYBOOK_GLOB, '**/{node_modules,.git,out}/**', 500);
-  const items: Item[] = [];
+  const out: Array<{ uri: vscode.Uri; total: number }> = [];
   for (const uri of files) {
     let total = -1;
     try {
@@ -189,6 +188,19 @@ async function pickCopybook(length: number, store: MappingStore, value?: string)
     } catch {
       /* 读不了就当长度未知 */
     }
+    out.push({ uri, total });
+  }
+  return out;
+}
+
+async function pickCopybook(length: number, store: MappingStore, value?: string): Promise<vscode.Uri | undefined> {
+  interface Item extends vscode.QuickPickItem {
+    uri?: vscode.Uri;
+    browse?: boolean;
+    match: boolean;
+  }
+  const items: Item[] = [];
+  for (const { uri, total } of await scanCopybooks()) {
     const match = total === length;
     items.push({
       label: `${match ? '$(check) ' : ''}${path.basename(uri.fsPath)}`,
@@ -604,18 +616,19 @@ async function loadSession(ctx: vscode.ExtensionContext, uri: vscode.Uri): Promi
   const folder = vscode.workspace.getWorkspaceFolder(uri) ?? vscode.workspace.workspaceFolders?.[0];
   const store = new MappingStore(ctx, folder);
 
-  const loadInto = async (g: Group, stored: string | undefined) => {
+  const loadInto = async (g: Group, stored: string | undefined, auto = false) => {
     if (!stored) {
       session.setCopybook(g.length, null, undefined, g.value);
       return;
     }
-    const cpyUri = store.resolve(stored);
+    const cpyUri = auto ? vscode.Uri.parse(stored) : store.resolve(stored);
     try {
       session.setCopybook(
         g.length,
         { name: path.basename(cpyUri.fsPath), copybook: await loadCopybook(cpyUri) },
         undefined,
-        g.value
+        g.value,
+        auto
       );
     } catch (e) {
       session.setCopybook(g.length, null, t('ext.cpyReadFailed', { path: stored, error: (e as Error).message }), g.value);
@@ -630,10 +643,20 @@ async function loadSession(ctx: vscode.ExtensionContext, uri: vscode.Uri): Promi
       const d = cfg.discriminators[String(len)];
       session.setDiscriminator(len, d ? { start: d.start, length: d.length, type: d.type } : null);
     }
+    // 没有保存设置的长度：工作区中总长度一致的 copybook 只有一个时自动选择（不保存）
+    let candidates: Array<{ uri: vscode.Uri; total: number }> | undefined;
     for (const g of [...session.groups]) {
       session.setLayoutSelection(g.length, cfg.layouts[layoutKey(g.length, g.value)] ?? {}, g.value);
       const stored =
         g.value === undefined ? cfg.copybooks[String(g.length)] : cfg.discriminators[String(g.length)]?.copybooks[g.value];
+      if (stored === undefined && g.value === undefined) {
+        candidates ??= await scanCopybooks();
+        const hits = candidates.filter((c) => c.total === g.length);
+        if (hits.length === 1) {
+          await loadInto(g, hits[0].uri.toString(), true);
+          continue;
+        }
+      }
       await loadInto(g, stored);
     }
   };

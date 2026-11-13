@@ -34,6 +34,8 @@ export interface Group {
   entries: Uint32Array;
   copybook: { name: string; copybook: Copybook } | null;
   loadError?: string;
+  /** copybook 未保存设置、按长度自动选择的 */
+  auto: boolean;
   columns: Column[];
   banner: Banner;
   /** REDEFINES / 01 记录的布局选择 */
@@ -49,6 +51,8 @@ export interface GroupInfo {
   discLabel: string | null;
   count: number;
   copybookName: string | null;
+  /** copybook 是按长度自动选择的 */
+  auto: boolean;
   banner: Banner;
   columns: Column[];
   choices: LayoutChoice[];
@@ -149,7 +153,7 @@ export class RdwSession {
   /** 长度 → 判别字段 */
   private discriminators = new Map<number, Discriminator>();
   /** 分组键 → 已指定的 copybook（重新分组后保留） */
-  private assigned = new Map<string, { ref: CopybookRef | null; loadError?: string }>();
+  private assigned = new Map<string, { ref: CopybookRef | null; loadError?: string; auto?: boolean }>();
   /** 分组键 → 布局选择（重新分组后保留） */
   private selections = new Map<string, LayoutSelection>();
   private errorEntries: Uint32Array = new Uint32Array(0);
@@ -243,6 +247,7 @@ export class RdwSession {
         entries: Uint32Array.from(slot.list),
         copybook: a?.ref ?? null,
         loadError: a?.loadError,
+        auto: !!a?.auto,
         columns: [],
         banner: { level: 'warn', text: '' },
         layoutSel: this.selections.get(key) ?? {},
@@ -284,6 +289,9 @@ export class RdwSession {
     g.banner = set.banner;
     g.choices = set.choices;
     const d = this.discriminators.get(g.length);
+    if (g.auto && g.copybook) {
+      g.banner = { ...g.banner, text: t('banner.autoPrefix', { name: g.copybook.name }) + g.banner.text };
+    }
     if (g.value !== undefined && d) {
       g.banner = { ...g.banner, text: t('disc.bannerPrefix', { label: discriminatorLabel(d), value: g.value }) + g.banner.text };
     }
@@ -325,16 +333,18 @@ export class RdwSession {
   /**
    * 为某个分组指定 copybook。value 为判别字段的值；未按字段值区分时省略。
    * 指定结果按分组键记住，重新分组后仍然有效。
+   * auto=true 表示没有保存的设置、按长度自动选择（提示条中注明）。
    */
-  setCopybook(length: number, ref: CopybookRef | null, loadError?: string, value?: string): void {
+  setCopybook(length: number, ref: CopybookRef | null, loadError?: string, value?: string, auto = false): void {
     const key = RdwSession.groupKey(length, value);
-    this.assigned.set(key, { ref, loadError });
+    this.assigned.set(key, { ref, loadError, auto });
     const g = this.groupByKey(key);
     if (!g) {
       return;
     }
     g.copybook = ref;
     g.loadError = loadError;
+    g.auto = auto && !!ref;
     this.refreshGroup(g);
   }
 
@@ -445,6 +455,7 @@ export class RdwSession {
         discLabel: g.value !== undefined && this.discriminators.has(g.length) ? discriminatorLabel(this.discriminators.get(g.length)!) : null,
         count: g.entries.length,
         copybookName: g.copybook ? g.copybook.name : null,
+        auto: g.auto,
         banner: g.banner,
         columns: g.columns,
         choices: g.choices,
