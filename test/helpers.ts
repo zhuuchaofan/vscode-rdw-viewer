@@ -1,3 +1,8 @@
+import { setLocale } from '../src/i18n';
+
+/** 现有测试的断言基于中文文案；语言切换本身在 i18n.test.ts 中验证 */
+setLocale('zh-cn');
+
 /** 测试辅助：构造带前后 RDW 的记录文件 */
 export function rec(body: Uint8Array | number[], opts: { front?: number; back?: number } = {}): Buffer {
   const b = Buffer.from(body);

@@ -67,7 +67,7 @@ test('OCCURS 展开，GROUP 内字段带下标', () => {
   assert.equal(cb.totalLength, 6);
 });
 
-test('REDEFINES 被忽略并给出警告；88 级被跳过；VALUE 不影响解析', () => {
+test('REDEFINES 默认显示原项目、不重复占位；88 级被跳过；VALUE 不影响解析', () => {
   const cb = parseCopybook(`
     01 R.
        05 A PIC X(4) VALUE 'AB. C'.
@@ -77,8 +77,9 @@ test('REDEFINES 被忽略并给出警告；88 级被跳过；VALUE 不影响解�
   `);
   assert.deepEqual(cb.fields.map((f) => f.name), ['A', 'FLAG']);
   assert.equal(cb.totalLength, 5);
-  assert.ok(cb.warnings.some((w) => w.includes('REDEFINES')));
-});
+  assert.deepEqual(cb.warnings, []);
+  assert.deepEqual(cb.records[0].sets.map((x) => x.options), [['A', 'A2']]);
+})
 
 test('V 之后的位数记为小数位数；字段带 USAGE', () => {
   assert.equal(picInfo('S9(5)V99', 'COMP-3', false).scale, 2);

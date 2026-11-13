@@ -1,0 +1,39 @@
+{
+  "copybooks": {
+    "30": "copybooks/TRAILER.cpy",
+    "40": "copybooks/HEADER.cpy",
+    "60": "copybooks/NUMERIC.cpy",
+    "80": "copybooks/DETAIL.cpy",
+    "120": "copybooks/CUSTOMER.cpy"
+  },
+  "discriminators": {
+    "56": {
+      "start": 19,
+      "length": 1,
+      "type": "text",
+      "copybooks": {
+        "C": "copybooks/PAYMENT.cpy",
+        "B": "copybooks/PAYMENT.cpy",
+        "K": "copybooks/PAYMENT.cpy"
+      }
+    },
+    "64": {
+      "start": 1,
+      "length": 1,
+      "type": "text",
+      "copybooks": {
+        "H": "copybooks/SL-HEADER.cpy",
+        "D": "copybooks/SL-DETAIL.cpy",
+        "T": "copybooks/SL-TRAILER.cpy"
+      }
+    }
+  },
+  "layouts": {
+    "56=B": {
+      "PAYMENT-REC.PAY-CARD": "PAY-BANK"
+    },
+    "56=K": {
+      "PAYMENT-REC.PAY-CARD": "PAY-CASH"
+    }
+  }
+}

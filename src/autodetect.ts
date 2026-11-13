@@ -29,6 +29,8 @@ export const MARK = {
 const COST_TEXT_RUN_START = 2;
 const COST_PACKED_BASE = 1.5;
 const COST_RAW = 10;
+/** COMP-3 中出现「可组成 Shift_JIS 双字节字符」的首字节时的额外代价 */
+const COST_PACKED_DBCS = 3.5;
 const MAX_PACKED = 16; // S9(31) COMP-3
 
 const isPrintableAscii = (b: number) => b >= 0x20 && b <= 0x7e;
@@ -108,6 +110,10 @@ export function segmentBody(bytes: Uint8Array, sjis = true): Segment[] {
           break;
         }
         cost += packedPenalty(bytes[j]);
+        // 与下一字节组成合法的 Shift_JIS 双字节字符（如全角空格 81 40）时，更可能是文字
+        if (sjis && j + 1 < n && isSjisLead(bytes[j]) && isSjisTrail(bytes[j + 1])) {
+          cost += COST_PACKED_DBCS;
+        }
         if (isPackedSign(lo)) {
           relax(from, (j + 1) * 2, cur + cost, 1);
           break; // 符号半字节必须在最后一个字节

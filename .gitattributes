@@ -1,0 +1,2 @@
+# examples/ 下的文件按字节与生成器的输出比较（test/examples.test.ts），不做换行转换
+examples/** -text

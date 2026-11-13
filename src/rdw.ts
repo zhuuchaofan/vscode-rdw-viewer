@@ -47,13 +47,30 @@ function validAt(buf: Uint8Array, view: DataView, pos: number): number {
   return end + RDW_SIZE;
 }
 
-/** pos 处记录有效，并且其后紧跟文件末尾或另一条有效记录 */
+/** pos 处是被截断的文件末尾：剩余不足一条记录，或前置 RDW 声明的长度超出文件末尾 */
+function truncatedTailAt(buf: Uint8Array, view: DataView, pos: number): boolean {
+  const remain = buf.length - pos;
+  if (remain < MIN_RECORD) {
+    return remain > 0;
+  }
+  return pos + RDW_SIZE + view.getUint16(pos, true) + RDW_SIZE > buf.length;
+}
+
+/**
+ * pos 处记录有效（前后 RDW 一致、长度不为 0），并且其后紧跟文件末尾、另一条有效记录，或被截断的文件末尾。
+ * 最后一种情况用于在「坏记录之后紧接着文件被截断」时，仍能找回中间的正常记录。
+ */
 function chainValidAt(buf: Uint8Array, view: DataView, pos: number): boolean {
+  // 长度为 0 的「记录」不作为重新对齐的锚点：RDW 的后 2 字节多为 00 00，
+  // 连续的 0 字节很容易看起来像一条前后一致的空记录
+  if (pos + RDW_SIZE <= buf.length && view.getUint16(pos, true) === 0) {
+    return false;
+  }
   const next = validAt(buf, view, pos);
   if (next < 0) {
     return false;
   }
-  return next === buf.length || validAt(buf, view, next) >= 0;
+  return next === buf.length || validAt(buf, view, next) >= 0 || truncatedTailAt(buf, view, next);
 }
 
 export function scanRdw(buf: Uint8Array): RdwIndex {

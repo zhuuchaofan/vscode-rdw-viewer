@@ -46,12 +46,14 @@
     '<div id="toolbar"></div>',
     '<div id="tabs"></div>',
     '<div id="banner"></div>',
+    '<div id="layouts"></div>',
     '<div id="cellbar"></div>',
     '<div id="scroller"><div id="inner"><div id="hdr"></div><div id="rows"></div></div></div>',
   ].join('');
   const $toolbar = document.getElementById('toolbar');
   const $tabs = document.getElementById('tabs');
   const $banner = document.getElementById('banner');
+  const $layouts = document.getElementById('layouts');
   const $cellbar = document.getElementById('cellbar');
   const $scroller = document.getElementById('scroller');
   const $inner = document.getElementById('inner');
@@ -151,6 +153,7 @@
       `</span><span class="spacer"></span>` +
       `<label title="${esc(S('autoPackedTitle'))}"><input type="checkbox" id="autoPacked" ${d.autoPacked ? 'checked' : ''}>${esc(S('autoPacked'))}</label>` +
       `<label title="${esc(S('hideFillerTitle'))}"><input type="checkbox" id="hideFiller" ${state.hideFiller ? 'checked' : ''}>${esc(S('hideFiller'))}</label>` +
+      `<button id="exportAll" title="${esc(S('exportAllTitle'))}">${esc(S('exportAll'))}</button>` +
       `<label>${esc(S('encoding'))} <select id="enc">${d.encodings
         .map((e) => `<option value="${e}" ${e === d.encoding ? 'selected' : ''}>${e}</option>`)
         .join('')}</select></label>`;
@@ -158,6 +161,7 @@
       state.hideFiller = ev.target.checked;
       resetView(true);
     };
+    document.getElementById('exportAll').onclick = () => vscode.postMessage({ type: 'exportAll' });
     document.getElementById('autoPacked').onchange = (ev) => {
       vscode.postMessage({ type: 'setAutoPacked', on: ev.target.checked });
     };
@@ -212,6 +216,7 @@
     } else if (state.view === ERR_VIEW) {
       level = 'error';
       text = S('errBanner', { n: d.errorCount });
+      buttons = `<button data-act="export" title="${esc(S('exportTitle'))}">${esc(S('export'))}</button>`;
     } else {
       const g = groupOf(state.view);
       level = g.banner.level;
@@ -223,6 +228,7 @@
       if (g.copybookName || g.banner.level === 'error') {
         buttons += `<button data-act="clear">${esc(S('clear'))}</button>`;
       }
+      buttons += `<button data-act="export" title="${esc(S('exportTitle'))}">${esc(S('export'))}</button>`;
       buttons +=
         g.value === null
           ? `<button data-act="disc" title="${esc(S('discTitle'))}">${esc(S('disc'))}</button>`
@@ -233,6 +239,10 @@
     const g = groupOf(state.view);
     $banner.querySelectorAll('button').forEach((b) => {
       b.onclick = () => {
+        if (b.dataset.act === 'export') {
+          vscode.postMessage({ type: 'exportView', view: state.view });
+          return;
+        }
         if (!g) return;
         const type = {
           choose: 'chooseCopybook',
@@ -242,6 +252,35 @@
           undisc: 'clearDisc',
         }[b.dataset.act];
         vscode.postMessage({ type, g: g.key });
+      };
+    });
+  }
+
+  /** REDEFINES / 01 记录的布局切换（当前分组标签页） */
+  function renderLayouts() {
+    const g = state.view !== ORDER_VIEW && state.view !== ERR_VIEW ? groupOf(state.view) : null;
+    const choices = (g && g.choices) || [];
+    if (!choices.length) {
+      $layouts.innerHTML = '';
+      $layouts.style.display = 'none';
+      return;
+    }
+    $layouts.style.display = '';
+    $layouts.innerHTML =
+      `<span class="lt" title="${esc(S('layoutTitle'))}">${esc(S('layout'))}</span>` +
+      choices
+        .map((c, i) => {
+          const label = c.id === '01' ? S('layoutRecord') : `REDEFINES ${c.base}`;
+          const opts = c.options
+            .map((o) => `<option value="${esc(o)}" ${o === c.selected ? 'selected' : ''}>${esc(o)}</option>`)
+            .join('');
+          return `<label title="${esc(c.id)}">${esc(label)} <select data-i="${i}">${opts}</select></label>`;
+        })
+        .join('');
+    $layouts.querySelectorAll('select').forEach((sel) => {
+      sel.onchange = () => {
+        const c = choices[Number(sel.dataset.i)];
+        vscode.postMessage({ type: 'setLayout', g: g.key, id: c.id, option: sel.value });
       };
     });
   }
@@ -395,6 +434,7 @@
     $rows.style.height = n * ROW_H + 'px';
     renderTabs();
     renderBanner();
+    renderLayouts();
     renderStaticHeader();
     if (n === 0) {
       $rows.innerHTML = `<div id="empty">${esc(S('empty'))}</div>`;
@@ -468,6 +508,7 @@
         $cellbar.innerHTML =
           `<span class="name" title="${esc(c.name)}">${esc(c.name)}</span>` +
           `<span class="value ${c.warn ? 'warn' : ''}">${esc(c.text)}</span>` +
+          (c.value ? `<span class="num">${esc(S('cellValue', { value: c.value }))}</span>` : '') +
           `<span class="hint">${esc(S('cellMeta', { pic: c.pic, pos: c.start, len: c.len }))}</span>` +
           `<span class="hex" title="${esc(c.hex)}">${esc(c.hex)}</span>`;
         break;

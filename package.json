@@ -2,7 +2,7 @@
   "name": "rdw-viewer",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "zhuuchaofan",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -82,10 +82,38 @@
           "default": "big",
           "description": "%config.binaryEndian%"
         },
+        "rdwViewer.comp5Endian": {
+          "type": "string",
+          "enum": [
+            "followBinaryEndian",
+            "big",
+            "little"
+          ],
+          "default": "followBinaryEndian",
+          "description": "%config.comp5Endian%"
+        },
+        "rdwViewer.floatFormat": {
+          "type": "string",
+          "enum": [
+            "ieee",
+            "ibm"
+          ],
+          "default": "ieee",
+          "description": "%config.floatFormat%"
+        },
         "rdwViewer.autoDetectPacked": {
           "type": "boolean",
           "default": true,
           "description": "%config.autoDetectPacked%"
+        },
+        "rdwViewer.exportEncoding": {
+          "type": "string",
+          "enum": [
+            "shift_jis",
+            "utf-8-bom"
+          ],
+          "default": "shift_jis",
+          "description": "%config.exportEncoding%"
         },
         "rdwViewer.hiddenFieldPattern": {
           "type": "string",
@@ -100,7 +128,8 @@
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "test": "tsc -p . && node --test out/test/*.test.js",
-    "package": "vsce package"
+    "package": "vsce package",
+    "examples": "tsc -p . && node out/test/fixtures/write-examples.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

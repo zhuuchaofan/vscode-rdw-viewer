@@ -5,9 +5,10 @@
 import { t } from './i18n';
 import { RdwIndex, scanRdw, RDW_SIZE } from './rdw';
 import { Copybook } from './copybook';
-import { Banner, Column, MismatchMode, buildColumns, displayWidth } from './layout';
+import { Banner, Column, LayoutChoice, MismatchMode, buildColumns, displayWidth } from './layout';
+import { LayoutSelection } from './copybook';
 import { SUPPORTED_ENCODINGS, createDecoder, sanitize, toHex } from './decode';
-import { decodeByUsage, decodePacked } from './numeric';
+import { decodePacked, decodeNumeric, decodeZoned, NumericOptions } from './numeric';
 import { segmentBody, formatSegments, plainSegments } from './autodetect';
 
 /** 判别字段：同一长度的记录，按这个字段的值选用不同的 copybook */
@@ -35,6 +36,10 @@ export interface Group {
   loadError?: string;
   columns: Column[];
   banner: Banner;
+  /** REDEFINES / 01 记录的布局选择 */
+  layoutSel: LayoutSelection;
+  /** 当前可以切换的布局 */
+  choices: LayoutChoice[];
 }
 
 export interface GroupInfo {
@@ -46,6 +51,7 @@ export interface GroupInfo {
   copybookName: string | null;
   banner: Banner;
   columns: Column[];
+  choices: LayoutChoice[];
 }
 
 export interface InitPayload {
@@ -89,6 +95,8 @@ export interface HdrRow {
 export type Row = RecRow | ErrRow | HdrRow;
 
 export interface CellInfo {
+  /** 外部十进制（DISPLAY 数字）解码后的数值，便于确认小数位、符号 */
+  value?: string;
   name: string;
   pic: string;
   start: number;
@@ -110,19 +118,30 @@ export class RdwSession {
   private discriminators = new Map<number, Discriminator>();
   /** 分组键 → 已指定的 copybook（重新分组后保留） */
   private assigned = new Map<string, { ref: CopybookRef | null; loadError?: string }>();
+  /** 分组键 → 布局选择（重新分组后保留） */
+  private selections = new Map<string, LayoutSelection>();
   private errorEntries: Uint32Array = new Uint32Array(0);
   private entryGroup: Int32Array;
   private displayRows: Int32Array = new Int32Array(0);
   private decoder: TextDecoder;
   private encoding: string;
   private mismatch: MismatchMode;
-  private littleEndian: boolean;
+  private numOpts: NumericOptions;
   private autoPacked: boolean;
 
   constructor(
     private readonly buf: Uint8Array,
     private readonly fileName: string,
-    opts: { encoding?: string; mismatch?: MismatchMode; binaryEndian?: 'big' | 'little'; autoPacked?: boolean } = {}
+    opts: {
+      encoding?: string;
+      mismatch?: MismatchMode;
+      /** COMP / COMP-4 / BINARY 的字节序 */
+      binaryEndian?: 'big' | 'little';
+      /** COMP-5 / COMP-1 / COMP-2 的字节序；省略时与 binaryEndian 相同 */
+      comp5Endian?: 'big' | 'little';
+      floatFormat?: 'ieee' | 'ibm';
+      autoPacked?: boolean;
+    } = {}
   ) {
     this.encoding = opts.encoding ?? 'shift_jis';
     this.decoder = createDecoder(this.encoding) ?? createDecoder('shift_jis')!;
@@ -130,7 +149,12 @@ export class RdwSession {
       this.encoding = 'shift_jis';
     }
     this.mismatch = opts.mismatch ?? 'lenient';
-    this.littleEndian = opts.binaryEndian === 'little';
+    const binaryLittle = opts.binaryEndian === 'little';
+    this.numOpts = {
+      binaryLittleEndian: binaryLittle,
+      comp5LittleEndian: opts.comp5Endian ? opts.comp5Endian === 'little' : binaryLittle,
+      floatFormat: opts.floatFormat ?? 'ieee',
+    };
     this.autoPacked = opts.autoPacked ?? true;
     this.index = scanRdw(buf);
     this.entryGroup = new Int32Array(this.index.count).fill(-1);
@@ -189,6 +213,8 @@ export class RdwSession {
         loadError: a?.loadError,
         columns: [],
         banner: { level: 'warn', text: '' },
+        layoutSel: this.selections.get(key) ?? {},
+        choices: [],
       };
       this.groups.push(g);
       const gi = this.groups.length - 1;
@@ -221,9 +247,10 @@ export class RdwSession {
   }
 
   private refreshGroup(g: Group): void {
-    const set = buildColumns(g.length, g.copybook, this.mismatch, g.loadError);
+    const set = buildColumns(g.length, g.copybook, this.mismatch, g.loadError, g.layoutSel);
     g.columns = set.columns;
     g.banner = set.banner;
+    g.choices = set.choices;
     const d = this.discriminators.get(g.length);
     if (g.value !== undefined && d) {
       g.banner = { ...g.banner, text: t('disc.bannerPrefix', { label: discriminatorLabel(d), value: g.value }) + g.banner.text };
@@ -277,6 +304,37 @@ export class RdwSession {
     g.copybook = ref;
     g.loadError = loadError;
     this.refreshGroup(g);
+  }
+
+  /**
+   * 切换布局（REDEFINES 或同长度的多个 01）。value 为判别字段的值；未按字段值区分时省略。
+   * option 为 undefined 时恢复默认。
+   */
+  setLayout(length: number, id: string, option: string | undefined, value?: string): void {
+    const key = RdwSession.groupKey(length, value);
+    const sel = { ...(this.selections.get(key) ?? {}) };
+    if (option === undefined) {
+      delete sel[id];
+    } else {
+      sel[id] = option;
+    }
+    this.selections.set(key, sel);
+    const g = this.groupByKey(key);
+    if (g) {
+      g.layoutSel = sel;
+      this.refreshGroup(g);
+    }
+  }
+
+  /** 一次设置某个分组的全部布局选择（从配置恢复时使用） */
+  setLayoutSelection(length: number, sel: LayoutSelection, value?: string): void {
+    const key = RdwSession.groupKey(length, value);
+    this.selections.set(key, { ...sel });
+    const g = this.groupByKey(key);
+    if (g) {
+      g.layoutSel = { ...sel };
+      this.refreshGroup(g);
+    }
   }
 
   getDiscriminator(length: number): Discriminator | undefined {
@@ -357,6 +415,7 @@ export class RdwSession {
         copybookName: g.copybook ? g.copybook.name : null,
         banner: g.banner,
         columns: g.columns,
+        choices: g.choices,
       })),
     };
   }
@@ -375,12 +434,12 @@ export class RdwSession {
       if (col.kind === 'partial') {
         return { text: toHex(bytes), warn: true };
       }
-      // COMP-3 / COMP 等解码成数值；内容不合法或不认识的 USAGE 回退为十六进制并标橙/不标橙
-      const d = decodeByUsage(bytes, col.usage, col.scale, col.signed, this.littleEndian);
+      // COMP-3 / COMP 等解码成数值。非法 → 十六进制并标橙；可疑（超出 PIC 位数等）→ 数值并标橙
+      const d = decodeNumeric(bytes, col, this.numOpts);
       if (!d) {
         return { text: toHex(bytes), warn: false };
       }
-      return d.ok ? { text: d.text, warn: false } : { text: toHex(bytes), warn: true };
+      return d.ok ? { text: d.text, warn: !!d.suspect } : { text: toHex(bytes), warn: true };
     }
     if (col.kind === 'body' && this.autoPacked) {
       // 没有 copybook：自动识别 COMP-3，其余按文字 / 十六进制显示
@@ -389,14 +448,9 @@ export class RdwSession {
     }
     const raw = this.decoder.decode(bytes);
     let warn = col.kind === 'partial' || col.kind === 'extra' || raw.includes('�');
-    if (col.type === 'num' && col.kind !== 'partial') {
-      let body = raw;
-      if (col.signed && body.length > 0 && /[{}A-Ra-r]/.test(body[body.length - 1])) {
-        body = body.slice(0, -1); // 符号嵌入末位（overpunch）
-      }
-      if (!/^[0-9+\-. ]*$/.test(body)) {
-        warn = true;
-      }
+    if (col.type === 'num' && col.kind !== 'partial' && !decodeZoned(bytes, col).ok) {
+      // 外部十进制：空格、符号位置错误等都视为非法（原样显示并标橙）
+      warn = true;
     }
     // 整条正文列不显示末尾空格（避免撑出大片空白；完整内容可点击单元格查看）
     return { text: col.kind === 'body' ? sanitize(raw).trimEnd() : sanitize(raw), warn };
@@ -482,6 +536,7 @@ export class RdwSession {
       pic: col.pic,
       start: col.start,
       len: col.len,
+      value: col.type === 'num' && col.kind === 'field' ? decodeZoned(this.slice(entry, col), col).text || undefined : undefined,
       text: plainSegments(r.text),
       hex: toHex(this.slice(entry, col)),
       warn: r.warn,

@@ -17,6 +17,22 @@
 - 前後の RDW が一致することでレコード境界を判定します。
 - レコード本体は既定で Shift_JIS としてデコードします。画面右上、または設定 `rdwViewer.encoding` で変更できます。
 
+## サンプル
+
+[`examples/`](examples/) に、すぐに試せる RDW ファイルと COPY句があります。**`examples` フォルダーを VS Code で開き**（設定 `.vscode/rdw-viewer.json` が自動で使われます）、各 `.dat` を右クリック →「RDW Viewer で開く」。
+
+| ファイル | 内容 |
+| --- | --- |
+| `01-customer.dat` | 通常のレコード：日本語・半角カナ・COMP-3・ゾーン 10 進。固定形式の COPY句（一連番号・識別領域付き） |
+| `02-mixed-length.dat` | レコード長が混在：ヘッダー 40 / 明細 80 / トレーラー 30 バイト |
+| `03-same-length.dat` | 同じレコード長（64）をレコード区分（1 バイト目）で COPY句を切り替え |
+| `04-redefines.dat` | REDEFINES：支払区分ごとにカード / 銀行 / 現金のレイアウトを切り替え |
+| `05-numeric.dat` | 各種 USAGE（ゾーン 10 進、SIGN SEPARATE、COMP-3、COMP、COMP-5、COMP-1/2）と不正データの例 |
+| `06-broken.dat` | RDW エラー：前後不一致・長さ不正・ファイルの途中切れ |
+| `07-no-copybook.dat` | COPY句なし：COMP-3 の自動判別 |
+
+サンプルは `npm run examples` で再生成できます（`test/fixtures/examples.ts`）。
+
 ## 使い方
 
 エクスプローラーでファイルを右クリック →「**RDW Viewer で開く**」。
@@ -26,7 +42,18 @@
 - **ファイル順**：右上の「ファイル順」で、ファイル上の順序のまま全レコードを表示します。COPY句が切り替わる箇所には見出し（項目名 / 属性 / 相対位置）が挿入されます。
 - **セルの詳細**：セルをクリックすると、表の上に項目値と元のバイト（16 進）を表示します。
 - **エラー**：レコード長の超過、ファイルの途中切れ、前後 RDW の不一致は「エラー」タブとファイル順ビューに赤で表示し、オフセットと原因を示します。後続の正しいレコード境界を探して解析を続けます。
-- **表示言語**：VS Code の表示言語に合わせて切り替わります（日本語環境では日本語、それ以外は中国語）。
+- **表示言語**：日本語が既定です。VS Code の表示言語が中国語のときは中国語で表示します。
+- **セルの数値**：数値項目のセルをクリックすると、デコードした数値（例：`PIC S9(5)V99` の `009876u` → `-987.65`）も表示します。
+
+### エクスポート（CSV / TSV）
+
+- 各タブ上部の「**エクスポート…**」：現在のタブを 1 ファイルに出力します。
+- ツールバーの「**すべてエクスポート…**」：フォルダーを選び、タブごとに 1 ファイル（`<ファイル名>_<レコード長>.csv` など）を出力します。エラーがあればエラー一覧も出力します。
+- 形式はエクスポート時に CSV / TSV から選択します。1 行目に項目名、2・3 行目に属性と相対位置、各行の先頭にレコード番号とオフセットを出力します。
+- 文字コードは既定で Shift_JIS（設定 `rdwViewer.exportEncoding` で BOM 付き UTF-8 に変更可）。Shift_JIS で表せない文字は `?` に置き換え、件数を通知します。
+- COMP-3 などはデコードした値を出力します。COPY句がない場合に自動判別した COMP-3 は `[値]`、判別できないバイトは `<16 進>` で出力します。
+- 大きなファイルも分割して書き込むため、メモリを大量に使いません。進行状況が表示され、途中で中止できます（中止したファイルは削除されます）。
+- ファイル順ビューは列構成がグループごとに異なるため、1 つの表としてはエクスポートできません。
 
 ### 同じレコード長で、項目値によって COPY句を切り替える
 
@@ -51,6 +78,15 @@
   }
 }
 ```
+
+### REDEFINES：レイアウトの切り替え
+
+REDEFINES の元の項目と再定義した項目は同じ領域を共有し、領域の長さはいちばん長いものになります（重複して数えません）。
+既定では元の項目のレイアウトで表示し、提示行の下の「**レイアウト**」で切り替えます（例：`REDEFINES PAY-CARD` → `PAY-BANK`）。
+
+- 選択はタブ（レコード長、または項目値のグループ）ごとに `.vscode/rdw-viewer.json` の `layouts` に保存されます。
+- 「項目値で切り替え」と組み合わせると、たとえば支払区分 `B` のレコードは自動的に銀行レイアウトで表示できます（`examples/04-redefines.dat` を参照）。
+- 入れ子の REDEFINES、OCCURS 内の REDEFINES、REDEFINES の REDEFINES にも対応します。同じ長さの `01` が複数ある場合も、ここで切り替えられます。
 
 ### COPY句がない場合：COMP-3 の自動判別
 
@@ -80,20 +116,38 @@ COPY句が未指定のレコードは「レコード全体」の 1 列で表示�
 
 ### COPY句の対応範囲
 
-- 固定形式 / 自由形式（行ごとに判定。1〜6 桁目の一連番号、73〜80 桁目の識別領域は自動で除去。一部の行の形式が崩れていても他の行に影響しません）
-- レベル番号、`FILLER`、`PIC X/A/9/S/V/Z…`、`PIC N` / `PIC G`（1 文字 2 バイト）、`SIGN … SEPARATE`、`OCCURS n`（`name(1)…` に展開）
+- 固定形式 / 自由形式（行ごとに判定。1〜6 桁目の一連番号、73〜80 桁目の識別領域は自動で除去。桁位置はバイト単位で数えるため、日本語の項目名があってもずれません）
+- レベル番号（77、66・88 は読み飛ばし）、`FILLER`、`PIC X/A/9/S/V/P/Z…`、編集項目、`PIC N` / `PIC G`（1 文字 2 バイト）
+- 集団項目の `USAGE` / `SIGN` は下位項目に引き継ぎ
+- `SIGN [LEADING|TRAILING] [SEPARATE]`
+- `OCCURS n`（入れ子は `name(1,2)` のように展開）
+- `REDEFINES`（上記のとおり切り替え可能）
 - `01` が複数ある場合は、全長がレコード長と一致するものを自動で使用
-- `COMPUTATIONAL-3` などの正式名称
+- `COMPUTATIONAL-3` などの正式名称、`PIC` のない `COMP-1` / `COMP-2` / `INDEX`
 
-数値の USAGE は値にデコードして右寄せで表示します。
+未対応（メモを表示します）：`OCCURS DEPENDING ON`（最大回数で展開）、`SYNC` による境界合わせ（スラックバイトは考慮しません）。
 
-| USAGE | 表示 |
-| --- | --- |
-| `COMP-3` / `PACKED-DECIMAL` | 10 進数。`V` の位置に小数点を入れます（例：`PIC S9(5)V99 COMP-3` の `12 34 56 7C` → `+12345.67`）。不正なバイトは 16 進でオレンジ表示 |
-| `COMP` / `BINARY` / `COMP-4` / `COMP-5` | 2 進整数。バイト順は `rdwViewer.binaryEndian`（既定 big） |
-| `COMP-1` / `COMP-2` | 4 / 8 バイト浮動小数点 |
+### 数値の形式
 
-未対応（メモを表示します）：`REDEFINES`（無視し、領域を占有しません）、`OCCURS DEPENDING ON`（最大回数で展開）。
+数値項目はデコードして右寄せで表示します。**不正なデータを正常値のように見せない**ことを重視し、
+内容が不正なものは 16 進で、デコードはできても疑わしいもの（桁あふれなど）は値をオレンジで表示します。
+
+| USAGE | 表示 | 不正（16 進・オレンジ） | 疑わしい（値・オレンジ） |
+| --- | --- | --- | --- |
+| `COMP-3` / `PACKED-DECIMAL` | `V` の位置に小数点。符号 C/A/E/F は正、D/B は負 | 数字部が 0〜9 以外、符号部が不正 | PIC の桁数を超える（偶数桁の先頭の半バイトが 0 でない）、符号なし項目に負号 |
+| `COMP` / `COMP-4` / `BINARY` | 2 進整数。バイト順は `rdwViewer.binaryEndian` | — | 値が PIC の桁数を超える（TRUNC(STD) では起こらない） |
+| `COMP-5` | 2 進整数（ネイティブ）。バイト順は `rdwViewer.comp5Endian` | — | —（2 進の全範囲を使えるため） |
+| `COMP-1` / `COMP-2` | 浮動小数点。`rdwViewer.floatFormat` で IEEE 754 / IBM 16 進浮動小数点 | NaN・無限大、長さ不正 | — |
+| `DISPLAY`（ゾーン 10 進） | 画面は元の文字のまま。セルをクリックすると数値を表示 | 空白・小数点など数字以外、符号の位置・文字が不正 | — |
+
+ゾーン 10 進の符号：`SIGN SEPARATE` は `+` / `-`。符号が数字に含まれる場合は、ASCII 環境の `p`〜`y`（負）と、EBCDIC から変換した `{A`〜`I`（正）・`}J`〜`R`（負）を受け付けます。
+
+プラットフォームごとの目安：
+
+| 作成環境 | `binaryEndian` | `comp5Endian` | `floatFormat` |
+| --- | --- | --- | --- |
+| メインフレーム（IBM など、EBCDIC から変換） | `big` | `big` | `ibm` |
+| Windows / Linux（x86）の COBOL | `big`（多くのコンパイラーの既定） | `little` | `ieee` |
 
 ## 設定
 
@@ -101,9 +155,12 @@ COPY句が未指定のレコードは「レコード全体」の 1 列で表示�
 | --- | --- | --- |
 | `rdwViewer.encoding` | `shift_jis` | 既定の文字コード |
 | `rdwViewer.lengthMismatch` | `lenient` | 長さ不一致時の扱い |
-| `rdwViewer.binaryEndian` | `big` | `COMP` / `BINARY` 項目のバイト順（COMP-3 には影響しません） |
+| `rdwViewer.binaryEndian` | `big` | `COMP` / `COMP-4` / `BINARY` 項目のバイト順（COMP-3 には影響しません） |
+| `rdwViewer.comp5Endian` | `followBinaryEndian` | `COMP-5` と `COMP-1` / `COMP-2` のバイト順（`big` / `little` / binaryEndian と同じ） |
+| `rdwViewer.floatFormat` | `ieee` | `COMP-1` / `COMP-2` の形式（`ieee` / `ibm`） |
 | `rdwViewer.autoDetectPacked` | `true` | COPY句がない場合に COMP-3 を自動判別 |
-| `rdwViewer.hiddenFieldPattern` | `^FILLER$` | 「FILLER 列を隠す」で隠す項目名の正規表現（例：`FILLER\|COMMA`） |
+| `rdwViewer.exportEncoding` | `shift_jis` | エクスポートの文字コード（`shift_jis` / `utf-8-bom`） |
+| `rdwViewer.hiddenFieldPattern` | `^FILLER$` | 「FILLER を非表示」で隠す項目名の正規表現（例：`FILLER\|COMMA`） |
 
 ## 開発
 

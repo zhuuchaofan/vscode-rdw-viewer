@@ -1,7 +1,11 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { RdwSession, Discriminator, Group, discriminatorLabel } from './session';
 import { t, setLocale, uiStrings } from './i18n';
+import { canExport, exportChunks, viewFileSuffix, DEFAULT_EXPORT_OPTIONS, ExportFormat } from './export';
+import { encodeShiftJis } from './sjisEncode';
+import { ERR_VIEW } from './session';
 import { parseCopybook, Copybook, selectRecord } from './copybook';
 import { MismatchMode } from './layout';
 
@@ -32,7 +36,12 @@ interface MappingConfig {
   copybooks: Record<string, string>;
   /** 长度 → 判别字段及「字段值 → copybook」 */
   discriminators: Record<string, StoredDiscriminator>;
+  /** 分组（长度，或「长度=字段值」）→ REDEFINES / 01 的布局选择 */
+  layouts: Record<string, Record<string, string>>;
 }
+
+/** 布局选择的保存键 */
+const layoutKey = (length: number, value?: string) => (value === undefined ? String(length) : `${length}=${value}`);
 
 /**
  * copybook 映射的存储。
@@ -52,11 +61,12 @@ class MappingStore {
     const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
     // 兼容旧版全局状态：直接保存的是「长度 → 路径」
     if (!('copybooks' in o) && !('discriminators' in o)) {
-      return { copybooks: { ...(o as Record<string, string>) }, discriminators: {} };
+      return { copybooks: { ...(o as Record<string, string>) }, discriminators: {}, layouts: {} };
     }
     return {
       copybooks: { ...((o.copybooks as Record<string, string>) ?? {}) },
       discriminators: { ...((o.discriminators as Record<string, StoredDiscriminator>) ?? {}) },
+      layouts: { ...((o.layouts as Record<string, Record<string, string>>) ?? {}) },
     };
   }
 
@@ -116,6 +126,24 @@ class MappingStore {
     await this.write(cfg);
   }
 
+  /** 保存布局选择（option 为 undefined 时恢复默认） */
+  async setLayout(length: number, value: string | undefined, id: string, option: string | undefined): Promise<void> {
+    const cfg = await this.read();
+    const k = layoutKey(length, value);
+    const sel = { ...(cfg.layouts[k] ?? {}) };
+    if (option === undefined) {
+      delete sel[id];
+    } else {
+      sel[id] = option;
+    }
+    if (Object.keys(sel).length) {
+      cfg.layouts[k] = sel;
+    } else {
+      delete cfg.layouts[k];
+    }
+    await this.write(cfg);
+  }
+
   /** 设置/取消判别字段；位置和类型不变时保留已指定的 copybook */
   async setDiscriminator(length: number, d: Discriminator | null): Promise<void> {
     const cfg = await this.read();
@@ -138,7 +166,10 @@ function config() {
     mismatch: c.get<MismatchMode>('lengthMismatch', 'lenient'),
     hiddenPattern: c.get<string>('hiddenFieldPattern', '^FILLER$'),
     binaryEndian: c.get<'big' | 'little'>('binaryEndian', 'big'),
+    comp5Endian: c.get<'followBinaryEndian' | 'big' | 'little'>('comp5Endian', 'followBinaryEndian'),
+    floatFormat: c.get<'ieee' | 'ibm'>('floatFormat', 'ieee'),
     autoPacked: c.get<boolean>('autoDetectPacked', true),
+    exportEncoding: c.get<'shift_jis' | 'utf-8-bom'>('exportEncoding', 'shift_jis'),
   };
 }
 
@@ -209,43 +240,251 @@ function describeLayout(session: RdwSession, g: Group): string {
         t('ext.layout.none'),
     })
   );
-  const rec = selectRecord(cb, length);
-  if (rec) {
-    lines.push(t('ext.layout.selected', { name: rec.name, len: rec.totalLength, n: rec.fields.length }));
-    if (rec.totalLength !== length) {
-      lines.push(t(rec.totalLength > length ? 'ext.layout.diffMore' : 'ext.layout.diffLess', { n: Math.abs(rec.totalLength - length) }));
-    }
+  const fields = g.columns.filter((c) => c.kind !== 'extra' && c.kind !== 'body');
+  const copyLen = fields.reduce((m, c) => Math.max(m, c.start - 1 + c.fullLen), 0);
+  lines.push(t('ext.layout.selected', { name: g.copybook.name, len: copyLen, n: fields.length }));
+  if (copyLen !== length) {
+    lines.push(t(copyLen > length ? 'ext.layout.diffMore' : 'ext.layout.diffLess', { n: Math.abs(copyLen - length) }));
+  }
+  for (const c of g.choices) {
+    lines.push(
+      t('ext.layout.choice', {
+        base: c.base === '01' ? t('ui.layoutRecord') : `REDEFINES ${c.base}`,
+        list: c.options.map((o) => (o === c.selected ? `[${o}]` : o)).join(' / '),
+      })
+    );
   }
   if (cb.warnings.length) {
     lines.push('', t('ext.layout.warnings'));
     cb.warnings.forEach((w) => lines.push(`  - ${w}`));
   }
-  if (rec) {
+  lines.push(
+    '',
+    [
+      'No.'.padStart(5),
+      t('ext.layout.colPos').padStart(6),
+      t('ext.layout.colLen').padStart(6),
+      t('ext.layout.colEnd').padStart(6),
+      ('  ' + t('ext.layout.colPic')).padEnd(26),
+      t('ext.layout.colName'),
+    ].join(' ')
+  );
+  fields.forEach((f, i) => {
     lines.push(
-      '',
       [
-        'No.'.padStart(5),
-        t('ext.layout.colPos').padStart(6),
-        t('ext.layout.colLen').padStart(6),
-        t('ext.layout.colEnd').padStart(6),
-        ('  ' + t('ext.layout.colPic')).padEnd(26),
-        t('ext.layout.colName'),
+        String(i + 1).padStart(5),
+        String(f.start).padStart(6),
+        String(f.fullLen).padStart(6),
+        String(f.start - 1 + f.fullLen).padStart(6),
+        ('  ' + f.pic).padEnd(26),
+        f.name,
       ].join(' ')
     );
-    rec.fields.forEach((f, i) => {
-      lines.push(
-        [
-          String(i + 1).padStart(5),
-          String(f.offset + 1).padStart(6),
-          String(f.length).padStart(6),
-          String(f.offset + f.length).padStart(6),
-          ('  ' + f.pic).padEnd(26),
-          f.name,
-        ].join(' ')
-      );
-    });
-  }
+  });
   return lines.join('\n') + '\n';
+}
+
+const LAST_FORMAT_KEY = 'rdwViewer.lastExportFormat';
+
+/** 选择导出格式（记住上次的选择） */
+async function pickExportFormat(ctx: vscode.ExtensionContext): Promise<ExportFormat | undefined> {
+  const last = ctx.globalState.get<ExportFormat>(LAST_FORMAT_KEY, 'csv');
+  const items = [
+    { label: 'CSV', description: t('ext.export.csvDesc'), f: 'csv' as const },
+    { label: 'TSV', description: t('ext.export.tsvDesc'), f: 'tsv' as const },
+  ].sort((a, b) => Number(b.f === last) - Number(a.f === last));
+  const pick = await vscode.window.showQuickPick(items, { title: t('ext.export.formatTitle') });
+  if (pick) {
+    await ctx.globalState.update(LAST_FORMAT_KEY, pick.f);
+  }
+  return pick?.f;
+}
+
+interface ExportResult {
+  records: number;
+  unmappable: number;
+}
+
+/**
+ * 把一个视图写入文件：分批生成文本、编码、追加写入，显示进度，可取消。
+ * 取消或失败时删除未完成的文件。
+ */
+async function writeExport(
+  session: RdwSession,
+  view: string,
+  format: ExportFormat,
+  file: vscode.Uri,
+  encoding: 'shift_jis' | 'utf-8-bom',
+  progress: vscode.Progress<{ message?: string; increment?: number }>,
+  token: vscode.CancellationToken,
+  share: number
+): Promise<ExportResult | undefined> {
+  const opts = { ...DEFAULT_EXPORT_OPTIONS, format };
+  const encode = (text: string) =>
+    encoding === 'shift_jis' ? encodeShiftJis(text) : { bytes: new TextEncoder().encode(text), unmappable: 0 };
+  const local = file.scheme === 'file';
+  const parts: Uint8Array[] = [];
+  const fd = local ? await fs.promises.open(file.fsPath, 'w') : undefined;
+  let unmappable = 0;
+  let records = 0;
+  let reported = 0;
+  try {
+    if (encoding === 'utf-8-bom') {
+      const bom = Uint8Array.of(0xef, 0xbb, 0xbf);
+      fd ? await fd.write(bom) : parts.push(bom);
+    }
+    for (const chunk of exportChunks(session, view, opts)) {
+      if (token.isCancellationRequested) {
+        return undefined;
+      }
+      const r = encode(chunk.text);
+      unmappable += r.unmappable;
+      fd ? await fd.write(r.bytes) : parts.push(r.bytes);
+      records = chunk.done;
+      const pct = chunk.total ? (chunk.done / chunk.total) * share : share;
+      progress.report({ increment: pct - reported });
+      reported = pct;
+    }
+  } finally {
+    await fd?.close();
+    if (token.isCancellationRequested) {
+      await vscode.workspace.fs.delete(file).then(undefined, () => undefined);
+    }
+  }
+  if (!local) {
+    const total = parts.reduce((n, p) => n + p.length, 0);
+    const all = new Uint8Array(total);
+    let at = 0;
+    for (const p of parts) {
+      all.set(p, at);
+      at += p.length;
+    }
+    await vscode.workspace.fs.writeFile(file, all);
+  }
+  return { records, unmappable };
+}
+
+async function exists(uri: vscode.Uri): Promise<boolean> {
+  return vscode.workspace.fs.stat(uri).then(
+    () => true,
+    () => false
+  );
+}
+
+/** 导出完成后的提示（带「打开所在文件夹」按钮） */
+async function notifyExported(message: string, unmappable: number, target: vscode.Uri): Promise<void> {
+  const text = unmappable ? `${message} ${t('ext.export.unmappable', { n: unmappable })}` : message;
+  const show = unmappable ? vscode.window.showWarningMessage : vscode.window.showInformationMessage;
+  const btn = await show(text, t('ext.export.reveal'));
+  if (btn) {
+    await vscode.commands.executeCommand('revealFileInOS', target);
+  }
+}
+
+/** 导出当前标签页 */
+async function exportView(ctx: vscode.ExtensionContext, session: RdwSession, dataUri: vscode.Uri, view: string): Promise<void> {
+  if (!canExport(view)) {
+    return;
+  }
+  const format = await pickExportFormat(ctx);
+  if (!format) {
+    return;
+  }
+  const base = path.basename(dataUri.fsPath).replace(/\.[^.]*$/, '');
+  const target = await vscode.window.showSaveDialog({
+    title: t('ext.export.saveTitle'),
+    defaultUri: vscode.Uri.joinPath(dataUri, '..', `${base}_${viewFileSuffix(session, view)}.${format}`),
+    filters: { [format.toUpperCase()]: [format] },
+  });
+  if (!target) {
+    return;
+  }
+  try {
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: t('ext.export.progress', { name: path.basename(target.fsPath) }), cancellable: true },
+      (progress, token) => writeExport(session, view, format, target, config().exportEncoding, progress, token, 100)
+    );
+    if (!result) {
+      vscode.window.showInformationMessage(t('ext.export.cancelled'));
+      return;
+    }
+    await notifyExported(t('ext.export.done', { n: result.records, path: target.fsPath }), result.unmappable, target);
+  } catch (e) {
+    vscode.window.showErrorMessage(t('ext.export.failed', { error: (e as Error).message }));
+  }
+}
+
+/** 全部导出：每个分组（以及错误列表）各一个文件 */
+async function exportAll(ctx: vscode.ExtensionContext, session: RdwSession, dataUri: vscode.Uri): Promise<void> {
+  const format = await pickExportFormat(ctx);
+  if (!format) {
+    return;
+  }
+  const dirs = await vscode.window.showOpenDialog({
+    title: t('ext.export.folderTitle'),
+    openLabel: t('ext.export.folderButton'),
+    canSelectFiles: false,
+    canSelectFolders: true,
+    defaultUri: vscode.Uri.joinPath(dataUri, '..'),
+  });
+  const dir = dirs?.[0];
+  if (!dir) {
+    return;
+  }
+  const base = path.basename(dataUri.fsPath).replace(/\.[^.]*$/, '');
+  const views = [...session.groups.map((g) => g.key), ...(session.count(ERR_VIEW) ? [ERR_VIEW] : [])];
+  const targets = views.map((v) => ({ view: v, uri: vscode.Uri.joinPath(dir, `${base}_${viewFileSuffix(session, v)}.${format}`) }));
+
+  const existing: string[] = [];
+  for (const x of targets) {
+    if (await exists(x.uri)) {
+      existing.push(path.basename(x.uri.fsPath));
+    }
+  }
+  if (existing.length) {
+    const list = '\n' + existing.slice(0, 10).join('\n') + (existing.length > 10 ? '\n…' : '');
+    const ok = await vscode.window.showWarningMessage(
+      t('ext.export.overwrite', { n: existing.length, list }),
+      { modal: true },
+      t('ext.export.overwriteButton')
+    );
+    if (!ok) {
+      return;
+    }
+  }
+
+  const totalRows = views.reduce((n, v) => n + session.count(v), 0) || 1;
+  try {
+    const summary = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: t('ext.export.progress', { name: base }), cancellable: true },
+      async (progress, token) => {
+        let records = 0;
+        let unmappable = 0;
+        for (const x of targets) {
+          progress.report({ message: path.basename(x.uri.fsPath) });
+          const share = (session.count(x.view) / totalRows) * 100;
+          const r = await writeExport(session, x.view, format, x.uri, config().exportEncoding, progress, token, share);
+          if (!r) {
+            return undefined;
+          }
+          records += r.records;
+          unmappable += r.unmappable;
+        }
+        return { records, unmappable };
+      }
+    );
+    if (!summary) {
+      vscode.window.showInformationMessage(t('ext.export.cancelled'));
+      return;
+    }
+    await notifyExported(
+      t('ext.export.doneAll', { files: targets.length, n: summary.records, dir: dir.fsPath }),
+      summary.unmappable,
+      targets[0].uri
+    );
+  } catch (e) {
+    vscode.window.showErrorMessage(t('ext.export.failed', { error: (e as Error).message }));
+  }
 }
 
 const MAX_DISC_VALUES = 50;
@@ -261,16 +500,13 @@ async function pickDiscriminator(session: RdwSession, g: Group): Promise<Discrim
   }
   const items: Item[] = [];
   if (g.copybook) {
-    const rec = selectRecord(g.copybook.copybook, g.length);
-    for (const f of rec?.fields ?? []) {
-      if (f.offset + f.length > g.length) {
-        continue;
-      }
-      const type = f.usage === 'COMP-3' || f.usage === 'PACKED-DECIMAL' ? 'comp3' : 'text';
+    // 当前显示的布局（含 REDEFINES 的选择）中、完整落在记录内的字段
+    for (const c of g.columns.filter((x) => x.kind === 'field')) {
+      const type = c.usage === 'COMP-3' || c.usage === 'PACKED-DECIMAL' ? 'comp3' : 'text';
       items.push({
-        label: f.name,
-        description: t('ext.disc.fieldDesc', { pos: f.offset + 1, len: f.length, pic: f.pic }),
-        d: { start: f.offset + 1, length: f.length, type },
+        label: c.name,
+        description: t('ext.disc.fieldDesc', { pos: c.start, len: c.len, pic: c.pic }),
+        d: { start: c.start, length: c.len, type },
       });
     }
   }
@@ -360,6 +596,8 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
     encoding: cfg.encoding,
     mismatch: cfg.mismatch,
     binaryEndian: cfg.binaryEndian,
+    comp5Endian: cfg.comp5Endian === 'followBinaryEndian' ? undefined : cfg.comp5Endian,
+    floatFormat: cfg.floatFormat,
     autoPacked: cfg.autoPacked,
   });
   const folder = vscode.workspace.getWorkspaceFolder(uri) ?? vscode.workspace.workspaceFolders?.[0];
@@ -392,6 +630,7 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
       session.setDiscriminator(len, d ? { start: d.start, length: d.length, type: d.type } : null);
     }
     for (const g of [...session.groups]) {
+      session.setLayoutSelection(g.length, cfg.layouts[layoutKey(g.length, g.value)] ?? {}, g.value);
       const stored =
         g.value === undefined ? cfg.copybooks[String(g.length)] : cfg.discriminators[String(g.length)]?.copybooks[g.value];
       await loadInto(g, stored);
@@ -483,6 +722,17 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
         }
         break;
       }
+      case 'setLayout': {
+        const g = session.groupByKey(msg.g);
+        if (!g) break;
+        // 选回默认（第一个）时不必保存
+        const choice = g.choices.find((c) => c.id === msg.id);
+        const option = choice && choice.options[0] === msg.option ? undefined : String(msg.option);
+        await store.setLayout(g.length, g.value, msg.id, option);
+        session.setLayout(g.length, msg.id, option, g.value);
+        sendInit();
+        break;
+      }
       case 'clearDisc': {
         const g = session.groupByKey(msg.g);
         if (!g) break;
@@ -498,6 +748,12 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
         }
         break;
       }
+      case 'exportView':
+        await exportView(ctx, session, uri, msg.view);
+        break;
+      case 'exportAll':
+        await exportAll(ctx, session, uri);
+        break;
       case 'setAutoPacked':
         session.setAutoPacked(!!msg.on);
         sendInit();
