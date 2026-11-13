@@ -10,3 +10,4 @@ PUBLISHING.md
 images/*.svg
 .gitignore
 .github/**
+examples/**

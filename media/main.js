@@ -46,12 +46,14 @@
     '<div id="toolbar"></div>',
     '<div id="tabs"></div>',
     '<div id="banner"></div>',
+    '<div id="layouts"></div>',
     '<div id="cellbar"></div>',
     '<div id="scroller"><div id="inner"><div id="hdr"></div><div id="rows"></div></div></div>',
   ].join('');
   const $toolbar = document.getElementById('toolbar');
   const $tabs = document.getElementById('tabs');
   const $banner = document.getElementById('banner');
+  const $layouts = document.getElementById('layouts');
   const $cellbar = document.getElementById('cellbar');
   const $scroller = document.getElementById('scroller');
   const $inner = document.getElementById('inner');
@@ -254,6 +256,35 @@
     });
   }
 
+  /** REDEFINES / 01 记录的布局切换（当前分组标签页） */
+  function renderLayouts() {
+    const g = state.view !== ORDER_VIEW && state.view !== ERR_VIEW ? groupOf(state.view) : null;
+    const choices = (g && g.choices) || [];
+    if (!choices.length) {
+      $layouts.innerHTML = '';
+      $layouts.style.display = 'none';
+      return;
+    }
+    $layouts.style.display = '';
+    $layouts.innerHTML =
+      `<span class="lt" title="${esc(S('layoutTitle'))}">${esc(S('layout'))}</span>` +
+      choices
+        .map((c, i) => {
+          const label = c.id === '01' ? S('layoutRecord') : `REDEFINES ${c.base}`;
+          const opts = c.options
+            .map((o) => `<option value="${esc(o)}" ${o === c.selected ? 'selected' : ''}>${esc(o)}</option>`)
+            .join('');
+          return `<label title="${esc(c.id)}">${esc(label)} <select data-i="${i}">${opts}</select></label>`;
+        })
+        .join('');
+    $layouts.querySelectorAll('select').forEach((sel) => {
+      sel.onchange = () => {
+        const c = choices[Number(sel.dataset.i)];
+        vscode.postMessage({ type: 'setLayout', g: g.key, id: c.id, option: sel.value });
+      };
+    });
+  }
+
   function clearCellbar() {
     $cellbar.innerHTML = `<span class="hint">${esc(S('cellHint'))}</span>`;
   }
@@ -403,6 +434,7 @@
     $rows.style.height = n * ROW_H + 'px';
     renderTabs();
     renderBanner();
+    renderLayouts();
     renderStaticHeader();
     if (n === 0) {
       $rows.innerHTML = `<div id="empty">${esc(S('empty'))}</div>`;
@@ -476,6 +508,7 @@
         $cellbar.innerHTML =
           `<span class="name" title="${esc(c.name)}">${esc(c.name)}</span>` +
           `<span class="value ${c.warn ? 'warn' : ''}">${esc(c.text)}</span>` +
+          (c.value ? `<span class="num">${esc(S('cellValue', { value: c.value }))}</span>` : '') +
           `<span class="hint">${esc(S('cellMeta', { pic: c.pic, pos: c.start, len: c.len }))}</span>` +
           `<span class="hex" title="${esc(c.hex)}">${esc(c.hex)}</span>`;
         break;

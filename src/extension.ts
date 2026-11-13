@@ -36,7 +36,12 @@ interface MappingConfig {
   copybooks: Record<string, string>;
   /** 长度 → 判别字段及「字段值 → copybook」 */
   discriminators: Record<string, StoredDiscriminator>;
+  /** 分组（长度，或「长度=字段值」）→ REDEFINES / 01 的布局选择 */
+  layouts: Record<string, Record<string, string>>;
 }
+
+/** 布局选择的保存键 */
+const layoutKey = (length: number, value?: string) => (value === undefined ? String(length) : `${length}=${value}`);
 
 /**
  * copybook 映射的存储。
@@ -56,11 +61,12 @@ class MappingStore {
     const o = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
     // 兼容旧版全局状态：直接保存的是「长度 → 路径」
     if (!('copybooks' in o) && !('discriminators' in o)) {
-      return { copybooks: { ...(o as Record<string, string>) }, discriminators: {} };
+      return { copybooks: { ...(o as Record<string, string>) }, discriminators: {}, layouts: {} };
     }
     return {
       copybooks: { ...((o.copybooks as Record<string, string>) ?? {}) },
       discriminators: { ...((o.discriminators as Record<string, StoredDiscriminator>) ?? {}) },
+      layouts: { ...((o.layouts as Record<string, Record<string, string>>) ?? {}) },
     };
   }
 
@@ -120,6 +126,24 @@ class MappingStore {
     await this.write(cfg);
   }
 
+  /** 保存布局选择（option 为 undefined 时恢复默认） */
+  async setLayout(length: number, value: string | undefined, id: string, option: string | undefined): Promise<void> {
+    const cfg = await this.read();
+    const k = layoutKey(length, value);
+    const sel = { ...(cfg.layouts[k] ?? {}) };
+    if (option === undefined) {
+      delete sel[id];
+    } else {
+      sel[id] = option;
+    }
+    if (Object.keys(sel).length) {
+      cfg.layouts[k] = sel;
+    } else {
+      delete cfg.layouts[k];
+    }
+    await this.write(cfg);
+  }
+
   /** 设置/取消判别字段；位置和类型不变时保留已指定的 copybook */
   async setDiscriminator(length: number, d: Discriminator | null): Promise<void> {
     const cfg = await this.read();
@@ -142,6 +166,8 @@ function config() {
     mismatch: c.get<MismatchMode>('lengthMismatch', 'lenient'),
     hiddenPattern: c.get<string>('hiddenFieldPattern', '^FILLER$'),
     binaryEndian: c.get<'big' | 'little'>('binaryEndian', 'big'),
+    comp5Endian: c.get<'followBinaryEndian' | 'big' | 'little'>('comp5Endian', 'followBinaryEndian'),
+    floatFormat: c.get<'ieee' | 'ibm'>('floatFormat', 'ieee'),
     autoPacked: c.get<boolean>('autoDetectPacked', true),
     exportEncoding: c.get<'shift_jis' | 'utf-8-bom'>('exportEncoding', 'shift_jis'),
   };
@@ -214,42 +240,47 @@ function describeLayout(session: RdwSession, g: Group): string {
         t('ext.layout.none'),
     })
   );
-  const rec = selectRecord(cb, length);
-  if (rec) {
-    lines.push(t('ext.layout.selected', { name: rec.name, len: rec.totalLength, n: rec.fields.length }));
-    if (rec.totalLength !== length) {
-      lines.push(t(rec.totalLength > length ? 'ext.layout.diffMore' : 'ext.layout.diffLess', { n: Math.abs(rec.totalLength - length) }));
-    }
+  const fields = g.columns.filter((c) => c.kind !== 'extra' && c.kind !== 'body');
+  const copyLen = fields.reduce((m, c) => Math.max(m, c.start - 1 + c.fullLen), 0);
+  lines.push(t('ext.layout.selected', { name: g.copybook.name, len: copyLen, n: fields.length }));
+  if (copyLen !== length) {
+    lines.push(t(copyLen > length ? 'ext.layout.diffMore' : 'ext.layout.diffLess', { n: Math.abs(copyLen - length) }));
+  }
+  for (const c of g.choices) {
+    lines.push(
+      t('ext.layout.choice', {
+        base: c.base === '01' ? t('ui.layoutRecord') : `REDEFINES ${c.base}`,
+        list: c.options.map((o) => (o === c.selected ? `[${o}]` : o)).join(' / '),
+      })
+    );
   }
   if (cb.warnings.length) {
     lines.push('', t('ext.layout.warnings'));
     cb.warnings.forEach((w) => lines.push(`  - ${w}`));
   }
-  if (rec) {
+  lines.push(
+    '',
+    [
+      'No.'.padStart(5),
+      t('ext.layout.colPos').padStart(6),
+      t('ext.layout.colLen').padStart(6),
+      t('ext.layout.colEnd').padStart(6),
+      ('  ' + t('ext.layout.colPic')).padEnd(26),
+      t('ext.layout.colName'),
+    ].join(' ')
+  );
+  fields.forEach((f, i) => {
     lines.push(
-      '',
       [
-        'No.'.padStart(5),
-        t('ext.layout.colPos').padStart(6),
-        t('ext.layout.colLen').padStart(6),
-        t('ext.layout.colEnd').padStart(6),
-        ('  ' + t('ext.layout.colPic')).padEnd(26),
-        t('ext.layout.colName'),
+        String(i + 1).padStart(5),
+        String(f.start).padStart(6),
+        String(f.fullLen).padStart(6),
+        String(f.start - 1 + f.fullLen).padStart(6),
+        ('  ' + f.pic).padEnd(26),
+        f.name,
       ].join(' ')
     );
-    rec.fields.forEach((f, i) => {
-      lines.push(
-        [
-          String(i + 1).padStart(5),
-          String(f.offset + 1).padStart(6),
-          String(f.length).padStart(6),
-          String(f.offset + f.length).padStart(6),
-          ('  ' + f.pic).padEnd(26),
-          f.name,
-        ].join(' ')
-      );
-    });
-  }
+  });
   return lines.join('\n') + '\n';
 }
 
@@ -469,16 +500,13 @@ async function pickDiscriminator(session: RdwSession, g: Group): Promise<Discrim
   }
   const items: Item[] = [];
   if (g.copybook) {
-    const rec = selectRecord(g.copybook.copybook, g.length);
-    for (const f of rec?.fields ?? []) {
-      if (f.offset + f.length > g.length) {
-        continue;
-      }
-      const type = f.usage === 'COMP-3' || f.usage === 'PACKED-DECIMAL' ? 'comp3' : 'text';
+    // 当前显示的布局（含 REDEFINES 的选择）中、完整落在记录内的字段
+    for (const c of g.columns.filter((x) => x.kind === 'field')) {
+      const type = c.usage === 'COMP-3' || c.usage === 'PACKED-DECIMAL' ? 'comp3' : 'text';
       items.push({
-        label: f.name,
-        description: t('ext.disc.fieldDesc', { pos: f.offset + 1, len: f.length, pic: f.pic }),
-        d: { start: f.offset + 1, length: f.length, type },
+        label: c.name,
+        description: t('ext.disc.fieldDesc', { pos: c.start, len: c.len, pic: c.pic }),
+        d: { start: c.start, length: c.len, type },
       });
     }
   }
@@ -568,6 +596,8 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
     encoding: cfg.encoding,
     mismatch: cfg.mismatch,
     binaryEndian: cfg.binaryEndian,
+    comp5Endian: cfg.comp5Endian === 'followBinaryEndian' ? undefined : cfg.comp5Endian,
+    floatFormat: cfg.floatFormat,
     autoPacked: cfg.autoPacked,
   });
   const folder = vscode.workspace.getWorkspaceFolder(uri) ?? vscode.workspace.workspaceFolders?.[0];
@@ -600,6 +630,7 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
       session.setDiscriminator(len, d ? { start: d.start, length: d.length, type: d.type } : null);
     }
     for (const g of [...session.groups]) {
+      session.setLayoutSelection(g.length, cfg.layouts[layoutKey(g.length, g.value)] ?? {}, g.value);
       const stored =
         g.value === undefined ? cfg.copybooks[String(g.length)] : cfg.discriminators[String(g.length)]?.copybooks[g.value];
       await loadInto(g, stored);
@@ -689,6 +720,17 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
           await applyMapping();
           sendInit();
         }
+        break;
+      }
+      case 'setLayout': {
+        const g = session.groupByKey(msg.g);
+        if (!g) break;
+        // 选回默认（第一个）时不必保存
+        const choice = g.choices.find((c) => c.id === msg.id);
+        const option = choice && choice.options[0] === msg.option ? undefined : String(msg.option);
+        await store.setLayout(g.length, g.value, msg.id, option);
+        session.setLayout(g.length, msg.id, option, g.value);
+        sendInit();
         break;
       }
       case 'clearDisc': {

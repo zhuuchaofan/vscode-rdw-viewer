@@ -59,3 +59,19 @@ test('空文件', () => {
   const idx = scanRdw(Buffer.alloc(0));
   assert.equal(idx.count, 0);
 });
+
+test('坏记录之后紧接着文件被截断：中间的正常记录仍能找回', () => {
+  const ok = (s: string) => rec(ascii(s.padEnd(8)));
+  const tail = ok('TAIL');
+  const file = Buffer.concat([
+    ok('A'),
+    rec(ascii('BADLEN..'), { front: 9000, back: 8 }),
+    ok('B'),
+    tail.subarray(0, tail.length - 5),
+  ]);
+  const idx = scanRdw(file);
+  // A, 错误(长度), B, 错误(截断)
+  assert.deepEqual(Array.from(idx.isError), [0, 1, 0, 1]);
+  assert.match(idx.errors.get(1)!, /重新找到记录边界/);
+  assert.match(idx.errors.get(3)!, /截断/);
+});

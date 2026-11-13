@@ -5,8 +5,10 @@
   "config.title": "RDW Viewer",
   "config.encoding": "レコード本体の既定の文字コード（WHATWG のエンコーディング名。例：shift_jis、utf-8、euc-jp）。",
   "config.lengthMismatch": "レコード長と COPY句の全長が一致しない場合：lenient=可能な範囲で項目に分割して差異を表示、strict=分割せずレコード全体を表示。",
-  "config.binaryEndian": "COMP / BINARY（2 進）項目のバイト順。COMP-3（パック 10 進）には影響しません。",
+  "config.binaryEndian": "COMP / COMP-4 / BINARY（2 進）項目のバイト順。メインフレームや多くのコンパイラーはビッグエンディアンです。COMP-3（パック 10 進）には影響しません。",
   "config.autoDetectPacked": "COPY句が未指定の場合、レコード中の COMP-3（パック 10 進）を自動判別して [数値] で表示します。推定のため誤判定の可能性があります。",
-  "config.hiddenFieldPattern": "「FILLER 列を隠す」がオンのとき、項目名がこの正規表現（大文字小文字を区別しない）に一致する列を隠します。例：FILLER|COMMA",
-  "config.exportEncoding": "エクスポートするファイルの文字コード：shift_jis、または BOM 付き UTF-8（utf-8-bom）。"
+  "config.hiddenFieldPattern": "「FILLER を非表示」がオンのとき、項目名がこの正規表現（大文字・小文字を区別しない）に一致する列を非表示にします。例：FILLER|COMMA",
+  "config.exportEncoding": "エクスポートするファイルの文字コード：shift_jis、または BOM 付き UTF-8（utf-8-bom）。",
+  "config.comp5Endian": "COMP-5（ネイティブ 2 進）と COMP-1 / COMP-2 のバイト順。x86 上で作成したデータは little、メインフレームは big。followBinaryEndian は rdwViewer.binaryEndian と同じ設定を使います。",
+  "config.floatFormat": "COMP-1 / COMP-2 の浮動小数点形式。ieee=IEEE 754（PC・UNIX）、ibm=IBM 16 進浮動小数点（メインフレーム）。"
 }

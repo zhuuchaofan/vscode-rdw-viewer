@@ -4,13 +4,14 @@
  * 支持：
  *  - 固定格式（第 7 列注释/第 8~72 列）和自由格式
  *  - 层级号 01~49、77，FILLER，GROUP
- *  - PIC X/A/9/S/V/Z 等及 (n) 重复
- *  - USAGE DISPLAY / COMP / COMP-3 等（二进制类只计算长度，按十六进制显示）
- *  - SIGN ... SEPARATE（符号占 1 字节）
- *  - OCCURS n（展开为 name(1), name(2)…）
+ *  - PIC X/A/9/S/V/Z/N/G 等及 (n) 重复
+ *  - USAGE DISPLAY / COMP / COMP-3 / COMP-5 / COMP-1 / COMP-2 等；组项目的 USAGE、SIGN 由下级项目继承
+ *  - SIGN [LEADING|TRAILING] SEPARATE（符号占 1 字节）
+ *  - OCCURS n（展开为 name(1)、嵌套时 name(1,2)…）
+ *  - REDEFINES：原项目与重定义项目共用同一区域（大小取最大者），可切换显示哪一个布局
+ *  - 多个 01：按记录长度选用；同长度的多个 01 也可切换
  *
- * 不支持（会产生警告）：REDEFINES（被忽略，不占位置）、OCCURS DEPENDING ON（按最大次数展开）、
- * 多个 01（只使用第一个）。
+ * 不支持（会产生提示）：OCCURS DEPENDING ON（按最大次数展开）、SYNC 的对齐填充。
  */
 import { t } from './i18n';
 
@@ -29,13 +30,43 @@ export interface CopyField {
   usage: string;
   /** 小数位数（V 之后的位数） */
   scale: number;
+  /** PIC 中 9 的个数（数值项目的位数） */
+  digits: number;
+  /** 符号单独占 1 字节（SIGN SEPARATE） */
+  signSeparate: boolean;
+  /** 符号在前（SIGN LEADING）；默认在后 */
+  signLeading: boolean;
 }
 
-/** copybook 中的一个顶层（01）记录定义 */
-export interface CopyRecord {
-  name: string;
+/** 一组可以切换的布局：REDEFINES 的原项目和重定义项目 */
+export interface RedefineSet {
+  /** 原项目的限定名（如 REC.PAY-INFO.CARD），用来保存选择 */
+  id: string;
+  /** 原项目名 */
+  base: string;
+  /** 可选的布局名（第一个为原项目） */
+  options: string[];
+  /** 区域的起始偏移（从 0 开始）和长度 */
+  offset: number;
+  length: number;
+}
+
+/** 按某种 REDEFINES 选择展开后的布局 */
+export interface CopyLayout {
   fields: CopyField[];
   totalLength: number;
+  /** 这个布局里出现的可切换区域 */
+  sets: RedefineSet[];
+}
+
+/** REDEFINES 的选择：区域 id → 布局名 */
+export type LayoutSelection = Record<string, string>;
+
+/** copybook 中的一个顶层（01）记录定义（fields / totalLength / sets 为默认布局） */
+export interface CopyRecord extends CopyLayout {
+  name: string;
+  /** 解析树（内部使用） */
+  readonly root: unknown;
 }
 
 export interface Copybook {
@@ -56,28 +87,65 @@ interface Node {
   level: number;
   name: string;
   pic?: string;
-  usage: string;
+  /** 本项目写明的 USAGE（未写时继承上级） */
+  usage?: string;
   occurs: number;
   redefines?: string;
-  signSeparate: boolean;
+  /** 本项目写明的 SIGN 子句（未写时继承上级） */
+  sign?: { separate: boolean; leading: boolean };
+  sync: boolean;
   children: Node[];
 }
+
+/** 从上级继承的属性 */
+interface Inherited {
+  usage: string;
+  sign: { separate: boolean; leading: boolean };
+}
+
+const NO_PIC_USAGES = new Set(['COMP-1', 'COMP-2', 'INDEX', 'POINTER']);
 
 const CLAUSE_STARTS = new Set([
   'PIC', 'PICTURE', 'USAGE', 'COMP', 'COMP-1', 'COMP-2', 'COMP-3', 'COMP-4', 'COMP-5',
   'BINARY', 'PACKED-DECIMAL', 'DISPLAY', 'NATIONAL', 'DISPLAY-1', 'OCCURS', 'REDEFINES',
   'COMPUTATIONAL', 'COMPUTATIONAL-1', 'COMPUTATIONAL-2', 'COMPUTATIONAL-3', 'COMPUTATIONAL-4', 'COMPUTATIONAL-5', 'SIGN', 'SYNC', 'SYNCHRONIZED',
-  'JUSTIFIED', 'JUST', 'BLANK', 'EXTERNAL', 'GLOBAL', 'INDEXED',
+  'JUSTIFIED', 'JUST', 'BLANK', 'EXTERNAL', 'GLOBAL', 'INDEXED', 'INDEX', 'POINTER', 'LEADING', 'TRAILING',
 ]);
 
 const USAGE_WORDS = new Set([
   'COMP', 'COMP-1', 'COMP-2', 'COMP-3', 'COMP-4', 'COMP-5', 'BINARY', 'PACKED-DECIMAL', 'DISPLAY',
-  'NATIONAL', 'DISPLAY-1',
+  'NATIONAL', 'DISPLAY-1', 'INDEX', 'POINTER',
 ]);
 
 /** COMPUTATIONAL-3 → COMP-3 等 */
 function normalizeUsage(u: string): string {
   return u.replace(/^COMPUTATIONAL/, 'COMP');
+}
+
+/**
+ * 字符在源码中占的列数：COBOL 的列按字节计算，Shift_JIS 的全角字符占 2 列
+ * （ASCII 和半角片假名占 1 列）。
+ */
+function columnWidth(ch: string): number {
+  const cp = ch.codePointAt(0)!;
+  return cp < 0x80 || (cp >= 0xff61 && cp <= 0xff9f) ? 1 : 2;
+}
+
+/** 按列（字节）截取：from、to 为从 0 开始的列位置（不含 to） */
+function sliceColumns(line: string, from: number, to: number): string {
+  let col = 0;
+  let out = '';
+  for (const ch of line) {
+    const w = columnWidth(ch);
+    if (col >= from && col + w <= to) {
+      out += ch;
+    }
+    col += w;
+    if (col >= to) {
+      break;
+    }
+  }
+  return out;
 }
 
 /** 固定格式行：1~6 列为空格或序号数字，第 7 列为指示区 */
@@ -102,7 +170,7 @@ function normalizeSource(text: string): string {
       if (indicator === '*' || indicator === '/' || indicator === 'D') {
         continue;
       }
-      content = raw.slice(7, 72);
+      content = sliceColumns(raw, 7, 72); // 第 8~72 列（按字节计）
     } else {
       content = raw.trim();
       if (content.startsWith('*')) {
@@ -200,6 +268,9 @@ export function picInfo(pic: string, usage: string, signSeparate: boolean): PicI
       return { length: 4, digits, scale, type: 'bin', signed };
     case 'COMP-2':
       return { length: 8, digits, scale, type: 'bin', signed };
+    case 'INDEX':
+    case 'POINTER':
+      return { length: 4, digits, scale, type: 'bin', signed };
     default:
       return {
         length: len + (signed && signSeparate ? 1 : 0),
@@ -239,9 +310,8 @@ function parseStatement(stmt: string, warnings: string[]): Node | undefined {
   const node: Node = {
     level: level === 77 ? 1 : level,
     name: 'FILLER',
-    usage: 'DISPLAY',
     occurs: 1,
-    signSeparate: false,
+    sync: false,
     children: [],
   };
 
@@ -290,14 +360,21 @@ function parseStatement(stmt: string, warnings: string[]): Node | undefined {
     } else if (k === 'REDEFINES') {
       node.redefines = tokens[i + 1];
       i += 2;
-    } else if (k === 'SIGN') {
-      i++;
-      while (['IS', 'LEADING', 'TRAILING', 'SEPARATE', 'CHARACTER'].includes(up(i))) {
-        if (up(i) === 'SEPARATE') {
-          node.signSeparate = true;
-        }
+    } else if (k === 'SIGN' || k === 'LEADING' || k === 'TRAILING') {
+      // SIGN [IS] {LEADING|TRAILING} [SEPARATE [CHARACTER]]（SIGN 可省略）
+      const sign = { separate: false, leading: false };
+      if (k === 'SIGN') {
         i++;
       }
+      while (['IS', 'LEADING', 'TRAILING', 'SEPARATE', 'CHARACTER'].includes(up(i))) {
+        if (up(i) === 'SEPARATE') sign.separate = true;
+        if (up(i) === 'LEADING') sign.leading = true;
+        i++;
+      }
+      node.sign = sign;
+    } else if (k === 'SYNC' || k === 'SYNCHRONIZED') {
+      node.sync = true;
+      i++;
     } else if (k === 'VALUE' || k === 'VALUES') {
       i++;
       while (i < tokens.length && !CLAUSE_STARTS.has(up(i))) {
@@ -310,34 +387,116 @@ function parseStatement(stmt: string, warnings: string[]): Node | undefined {
   return node;
 }
 
-function flatten(node: Node, offset: number, suffix: string, out: CopyField[], warnings: string[]): number {
-  if (node.redefines) {
-    warnings.push(t('cpy.redefines', { name: node.name, target: node.redefines }));
-    return offset;
+const sameName = (a: string | undefined, b: string) => (a ?? '').toUpperCase() === b.toUpperCase();
+
+function isElementary(node: Node, usage: string): boolean {
+  return !!node.pic || (node.children.length === 0 && NO_PIC_USAGES.has(usage));
+}
+
+function inherit(node: Node, from: Inherited): Inherited {
+  return { usage: node.usage ?? from.usage, sign: node.sign ?? from.sign };
+}
+
+/** 把相邻的「原项目 + 重定义项目」归为一组；重定义项目的对象可以是原项目或同组中的另一项目 */
+function groupSlots(children: Node[], warnings: string[]): Node[][] {
+  const slots: Node[][] = [];
+  for (const c of children) {
+    const last = slots[slots.length - 1];
+    if (c.redefines) {
+      if (last && last.some((x) => sameName(c.redefines, x.name))) {
+        last.push(c);
+      } else {
+        warnings.push(t('cpy.redefinesTarget', { name: c.name, target: c.redefines }));
+      }
+      continue;
+    }
+    slots.push([c]);
+  }
+  return slots;
+}
+
+/** 项目（含 OCCURS 次数）占用的字节数；REDEFINES 区域按最大者计算 */
+function sizeOf(node: Node, inh: Inherited, warnings: string[]): number {
+  const me = inherit(node, inh);
+  let one: number;
+  if (isElementary(node, me.usage)) {
+    one = picInfo(node.pic ?? '', me.usage, me.sign.separate).length;
+  } else {
+    one = 0;
+    for (const slot of groupSlots(node.children, [])) {
+      one += Math.max(...slot.map((c) => sizeOf(c, me, warnings)));
+    }
+  }
+  return one * node.occurs;
+}
+
+interface EmitCtx {
+  out: CopyField[];
+  sets: RedefineSet[];
+  sel: LayoutSelection;
+  warnings: string[];
+}
+
+/** 展开一个项目，返回结束偏移 */
+function emit(node: Node, offset: number, idx: number[], path: string, inh: Inherited, ctx: EmitCtx): number {
+  const me = inherit(node, inh);
+  if (node.sync && (me.usage !== 'DISPLAY' || !node.pic)) {
+    ctx.warnings.push(t('cpy.sync', { name: node.name }));
   }
   let off = offset;
   for (let r = 1; r <= node.occurs; r++) {
-    const sfx = suffix + (node.occurs > 1 ? `(${r})` : '');
-    if (node.pic) {
-      const p = picInfo(node.pic, node.usage, node.signSeparate);
-      out.push({
-        name: node.name + sfx,
-        pic: p.type === 'bin' ? `${node.pic} ${node.usage}` : node.pic,
+    const ix = node.occurs > 1 ? [...idx, r] : idx;
+    if (isElementary(node, me.usage)) {
+      const p = picInfo(node.pic ?? '', me.usage, me.sign.separate);
+      const picText = node.pic ?? '';
+      ctx.out.push({
+        name: node.name + (ix.length ? `(${ix.join(',')})` : ''),
+        pic: p.type === 'bin' ? `${picText} ${me.usage}`.trim() : picText,
         offset: off,
         length: p.length,
         type: p.type,
         signed: p.signed,
-        usage: node.usage,
+        usage: me.usage,
         scale: p.scale,
+        digits: p.digits,
+        signSeparate: p.signed && me.sign.separate,
+        signLeading: p.signed && me.sign.leading,
       });
       off += p.length;
     } else {
-      for (const c of node.children) {
-        off = flatten(c, off, sfx, out, warnings);
-      }
+      off = emitChildren(node.children, off, ix, `${path}.${node.name}`, me, ctx);
     }
   }
   return off;
+}
+
+function emitChildren(children: Node[], offset: number, idx: number[], path: string, inh: Inherited, ctx: EmitCtx): number {
+  let off = offset;
+  for (const slot of groupSlots(children, ctx.warnings)) {
+    if (slot.length === 1) {
+      off = emit(slot[0], off, idx, path, inh, ctx);
+      continue;
+    }
+    // REDEFINES：只展开选中的布局，区域大小取各布局的最大值（不重复计算）
+    const id = `${path}.${slot[0].name}`.replace(/^\./, '');
+    const size = Math.max(...slot.map((c) => sizeOf(c, inh, ctx.warnings)));
+    if (!ctx.sets.some((x) => x.id === id)) {
+      ctx.sets.push({ id, base: slot[0].name, options: slot.map((c) => c.name), offset: off, length: size });
+    }
+    const chosen = slot.find((c) => sameName(ctx.sel[id], c.name)) ?? slot[0];
+    emit(chosen, off, idx, path, inh, ctx);
+    off += size;
+  }
+  return off;
+}
+
+const ROOT_INHERITED: Inherited = { usage: 'DISPLAY', sign: { separate: false, leading: false } };
+
+/** 按 REDEFINES 的选择展开一个 01 记录 */
+export function layoutRecord(rec: CopyRecord, sel: LayoutSelection = {}): CopyLayout {
+  const ctx: EmitCtx = { out: [], sets: [], sel, warnings: [] };
+  const totalLength = emit(rec.root as Node, 0, [], '', ROOT_INHERITED, ctx);
+  return { fields: ctx.out, totalLength, sets: ctx.sets };
 }
 
 export function parseCopybook(text: string): Copybook {
@@ -363,10 +522,11 @@ export function parseCopybook(text: string): Copybook {
 
   const records: CopyRecord[] = [];
   for (const root of roots) {
-    const fields: CopyField[] = [];
-    const total = flatten(root, 0, '', fields, warnings);
-    if (fields.length > 0) {
-      records.push({ name: root.name, fields, totalLength: total });
+    // 01 层的 REDEFINES 是同一区域的另一种记录定义，作为独立的 01 记录处理
+    const ctx: EmitCtx = { out: [], sets: [], sel: {}, warnings };
+    const totalLength = emit(root, 0, [], '', ROOT_INHERITED, ctx);
+    if (ctx.out.length > 0) {
+      records.push({ name: root.name, fields: ctx.out, totalLength, sets: ctx.sets, root });
     }
   }
   const first = records[0];

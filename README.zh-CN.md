@@ -16,6 +16,22 @@
 - 前后 RDW 必须一致，据此识别记录边界。
 - 正文默认按 Shift_JIS 解码，可在界面右上角切换编码，或通过设置 `rdwViewer.encoding` 修改默认值。
 
+## 示例
+
+[`examples/`](examples/) 中有可以直接体验的 RDW 文件和 copybook。**在 VS Code 中打开 `examples` 文件夹**（会自动使用其中的 `.vscode/rdw-viewer.json` 配置），右键各个 `.dat` →「用 RDW Viewer 打开」。
+
+| 文件 | 内容 |
+| --- | --- |
+| `01-customer.dat` | 普通记录：日文、半角片假名、COMP-3、外部十进制。固定格式 copybook（带序号、标识区） |
+| `02-mixed-length.dat` | 记录长度混合：头记录 40 / 明细 80 / 尾记录 30 字节 |
+| `03-same-length.dat` | 长度相同（64），按记录类型（第 1 字节）切换 copybook |
+| `04-redefines.dat` | REDEFINES：按支付方式切换信用卡 / 银行 / 现金布局 |
+| `05-numeric.dat` | 各种 USAGE（外部十进制、SIGN SEPARATE、COMP-3、COMP、COMP-5、COMP-1/2）及非法数据示例 |
+| `06-broken.dat` | RDW 错误：前后不一致、长度错误、文件截断 |
+| `07-no-copybook.dat` | 没有 copybook：自动识别 COMP-3 |
+
+示例可用 `npm run examples` 重新生成（`test/fixtures/examples.ts`）。
+
 ## 使用
 
 在资源管理器中右键文件 → **用 RDW Viewer 打开**。
@@ -24,7 +40,8 @@
 - **选择 copybook**：在标签页上方点「选择 copybook…」。工作区里总长度与记录长度一致的 `.cpy` 会排在最前面并带 ✓。选择结果保存到 `<工作区>/.vscode/rdw-viewer.json`（无工作区时保存到全局状态），下次打开自动应用。
 - **文件顺序**：右上角「文件顺序」按原始顺序混排所有记录，copybook 切换处插入新的三行表头（項目名 / 属性 / 相対位置）。
 - **版本**：工具栏文件名旁显示当前运行的插件版本。
-- **界面语言**：按 VS Code 的显示语言自动切换，日文环境显示日文，其他环境显示中文。
+- **界面语言**：默认日语；VS Code 的显示语言为中文时显示中文。
+- **单元格数值**：点击数值字段的单元格，会同时显示解码后的数值（如 `PIC S9(5)V99` 的 `009876u` → `-987.65`）。
 - **单元格详情**：点击单元格，在表格上方显示字段值和原始字节（十六进制）。
 - **错误**：长度越界、文件截断、前后 RDW 不一致都会在「错误」标签页和文件顺序视图中标红，写明偏移和原因，并尝试从后面的有效记录重新对齐。
 
@@ -62,6 +79,15 @@
 }
 ```
 
+### REDEFINES：切换布局
+
+REDEFINES 的原项目与重定义项目共用同一块区域，区域长度取其中最长的一个（不重复计算）。
+默认按原项目的布局显示，在提示条下方的「**布局**」中切换（如 `REDEFINES PAY-CARD` → `PAY-BANK`）。
+
+- 选择按标签页（长度，或按字段值区分的分组）保存在 `.vscode/rdw-viewer.json` 的 `layouts` 中。
+- 与「按字段值区分」组合使用，例如支付方式为 `B` 的记录自动按银行布局显示（见 `examples/04-redefines.dat`）。
+- 支持嵌套的 REDEFINES、OCCURS 中的 REDEFINES、REDEFINES 的 REDEFINES；同长度的多个 `01` 也在这里切换。
+
 ### 没有 copybook 时：自动识别 COMP-3
 
 尚未指定 copybook 的记录显示为「整条正文」一列。工具栏的「**自动识别 COMP-3**」开启时（默认开启，设置 `rdwViewer.autoDetectPacked`），
@@ -91,22 +117,37 @@
 ### copybook 支持范围
 
 支持：
-- 固定/自由格式（逐行判断；1~6 列序号、73~80 列标识自动去除，个别行格式不规整不影响其他行）
-- 层级号、`FILLER`、`PIC X/A/9/S/V/Z…`、`PIC N` / `PIC G`（每字符 2 字节）、`SIGN … SEPARATE`、`OCCURS n`（展开为 `name(1)…`）
+- 固定/自由格式（逐行判断；1~6 列序号、73~80 列标识自动去除。列按字节计算，有日文项目名也不会错位）
+- 层级号（77；66、88 跳过）、`FILLER`、`PIC X/A/9/S/V/P/Z…`、编辑项目、`PIC N` / `PIC G`（每字符 2 字节）
+- 组项目的 `USAGE` / `SIGN` 由下级项目继承
+- `SIGN [LEADING|TRAILING] [SEPARATE]`
+- `OCCURS n`（嵌套时展开为 `name(1,2)`）
+- `REDEFINES`（可切换，见上文）
 - 多个 `01`：自动选用总长度等于记录长度的那个定义
-- `COMPUTATIONAL-3` 等全称写法
+- `COMPUTATIONAL-3` 等全称写法，没有 `PIC` 的 `COMP-1` / `COMP-2` / `INDEX`
 
-数值类 USAGE 会解码成可读的数值（右对齐显示，点击单元格可看原始字节）：
+不支持（会给出提示）：`OCCURS DEPENDING ON`（按最大次数展开）、`SYNC` 的对齐填充（不计算 slack byte）。
 
-| USAGE | 显示 |
-| --- | --- |
-| `COMP-3` / `PACKED-DECIMAL` | 十进制数，按 `V` 位置插入小数点，如 `PIC S9(5)V99 COMP-3` 的 `12 34 56 7C` → `+12345.67`。符号半字节 C/F/A/E 为正、D/B 为负；数字或符号半字节非法时回退为十六进制并标橙 |
-| `COMP` / `BINARY` / `COMP-4` / `COMP-5` | 定点二进制整数，字节序由 `rdwViewer.binaryEndian` 决定（默认 big） |
-| `COMP-1` / `COMP-2` | 4 / 8 字节浮点数 |
+### 数值格式
 
-有符号字段显示 `+` / `-`，无符号字段不带符号。
+数值字段解码后右对齐显示。重点是**不把错误数据显示成正常值**：内容非法的显示十六进制并标橙；能解码但可疑的（如超出位数）显示数值并标橙。有符号字段显示 `+` / `-`，无符号字段不带符号。
 
-不支持（会给出提示）：`REDEFINES`（忽略，不占位置）、`OCCURS DEPENDING ON`（按最大次数展开）。
+| USAGE | 显示 | 非法（十六进制、标橙） | 可疑（数值、标橙） |
+| --- | --- | --- | --- |
+| `COMP-3` / `PACKED-DECIMAL` | 按 `V` 插入小数点；符号 C/A/E/F 为正、D/B 为负 | 数字半字节不是 0~9、符号半字节非法 | 超出 PIC 位数（偶数位时最高的填充半字节不为 0）、无符号字段带负号 |
+| `COMP` / `COMP-4` / `BINARY` | 二进制整数，字节序由 `rdwViewer.binaryEndian` 决定 | — | 超出 PIC 位数（TRUNC(STD) 下不会出现） |
+| `COMP-5` | 本地二进制整数，字节序由 `rdwViewer.comp5Endian` 决定 | — | —（可以使用整个二进制范围） |
+| `COMP-1` / `COMP-2` | 浮点数；`rdwViewer.floatFormat` 选择 IEEE 754 或 IBM 十六进制浮点 | NaN、无穷大、长度不对 | — |
+| `DISPLAY`（外部十进制） | 表格中显示原始字符；点击单元格显示数值 | 空格、小数点等非数字字符，符号位置或字符不对 | — |
+
+外部十进制的符号：`SIGN SEPARATE` 为 `+` / `-`；符号嵌入数字时，接受 ASCII 环境的 `p`~`y`（负），以及 EBCDIC 转换后的 `{A`~`I`（正）、`}J`~`R`（负）。
+
+不同平台的参考设置：
+
+| 数据来源 | `binaryEndian` | `comp5Endian` | `floatFormat` |
+| --- | --- | --- | --- |
+| 大型机（IBM 等，从 EBCDIC 转换） | `big` | `big` | `ibm` |
+| Windows / Linux（x86）上的 COBOL | `big`（多数编译器的默认） | `little` | `ieee` |
 
 copybook 总长度与记录长度对不上时，点提示条上的「**解析详情**」，会在编辑器中列出每个字段的位置、长度、属性以及解析提示，方便对照 copybook 原文找出差异。
 
@@ -116,7 +157,9 @@ copybook 总长度与记录长度对不上时，点提示条上的「**解析详
 | --- | --- | --- |
 | `rdwViewer.encoding` | `shift_jis` | 默认字符编码 |
 | `rdwViewer.lengthMismatch` | `lenient` | 长度不一致时的处理方式 |
-| `rdwViewer.binaryEndian` | `big` | `COMP` / `BINARY` 字段的字节序（COMP-3 不受影响） |
+| `rdwViewer.binaryEndian` | `big` | `COMP` / `COMP-4` / `BINARY` 字段的字节序（COMP-3 不受影响） |
+| `rdwViewer.comp5Endian` | `followBinaryEndian` | `COMP-5` 和 `COMP-1` / `COMP-2` 的字节序（`big` / `little` / 与 binaryEndian 相同） |
+| `rdwViewer.floatFormat` | `ieee` | `COMP-1` / `COMP-2` 的格式（`ieee` / `ibm`） |
 | `rdwViewer.autoDetectPacked` | `true` | 没有 copybook 时自动识别 COMP-3 |
 | `rdwViewer.exportEncoding` | `shift_jis` | 导出文件的编码（`shift_jis` / `utf-8-bom`） |
 | `rdwViewer.hiddenFieldPattern` | `^FILLER$` | 「隐藏 FILLER 列」开关隐藏的字段名正则，如 `FILLER\|COMMA` |
@@ -148,6 +191,8 @@ npx vsce package
 - `src/layout.ts` 列布局（长度不一致的处理）
 - `src/i18n.ts` 界面文字（中文 / 日文）
 - `src/export.ts` CSV / TSV 导出
+- `src/numeric.ts` 数值解码（COMP-3 / COMP / COMP-5 / 浮点 / 外部十进制）
+- `test/fixtures/examples.ts` 示例文件生成器
 - `src/sjisEncode.ts` Shift_JIS 编码器
 - `src/autodetect.ts` 无 copybook 时的 COMP-3 自动识别
 - `src/numeric.ts` COMP-3 / COMP 解码

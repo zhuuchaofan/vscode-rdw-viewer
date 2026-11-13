@@ -82,6 +82,25 @@
           "default": "big",
           "description": "%config.binaryEndian%"
         },
+        "rdwViewer.comp5Endian": {
+          "type": "string",
+          "enum": [
+            "followBinaryEndian",
+            "big",
+            "little"
+          ],
+          "default": "followBinaryEndian",
+          "description": "%config.comp5Endian%"
+        },
+        "rdwViewer.floatFormat": {
+          "type": "string",
+          "enum": [
+            "ieee",
+            "ibm"
+          ],
+          "default": "ieee",
+          "description": "%config.floatFormat%"
+        },
         "rdwViewer.autoDetectPacked": {
           "type": "boolean",
           "default": true,
@@ -109,7 +128,8 @@
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "test": "tsc -p . && node --test out/test/*.test.js",
-    "package": "vsce package"
+    "package": "vsce package",
+    "examples": "tsc -p . && node out/test/fixtures/write-examples.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

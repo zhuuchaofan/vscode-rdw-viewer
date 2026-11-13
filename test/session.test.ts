@@ -281,3 +281,97 @@ test('判别字段（文字）：去掉末尾空格；超出记录长度时单�
   s.setDiscriminator(1, { start: 1, length: 2, type: 'text' });
   assert.equal(s.init().groups.find((g) => g.length === 1)!.value, '(超出记录长度)');
 });
+
+test('数值设置：COMP 大端、COMP-5 小端、IBM 浮点；可疑值标橙', () => {
+  const cb = parseCopybook(`
+    01 R.
+       05 A PIC S9(4) COMP.
+       05 B PIC S9(4) COMP-5.
+       05 C COMP-1.
+       05 D PIC S9(4) COMP-3.
+  `); // 2 + 2 + 4 + 3 = 11
+  const body = Buffer.concat([hexBytes('30 39'), hexBytes('39 30'), hexBytes('C2 76 A0 00'), hexBytes('12 34 5C')]);
+  const s = new RdwSession(rec(body), 't.dat', { binaryEndian: 'big', comp5Endian: 'little', floatFormat: 'ibm' });
+  s.setCopybook(11, { name: 'n.cpy', copybook: cb });
+  const row = s.getRows('L11', 0, 1)[0] as RecRow;
+  assert.deepEqual(row.c, ['+12345', '+12345', '-118.625', '+12345']);
+  // A：COMP 超出 S9(4)；D：COMP-3 超出 S9(4)；B：COMP-5 允许
+  assert.deepEqual(row.w, [0, 3]);
+
+  // 省略 comp5Endian 时与 binaryEndian 相同（向后兼容）
+  const s2 = new RdwSession(rec(body), 't.dat', { binaryEndian: 'big' });
+  s2.setCopybook(11, { name: 'n.cpy', copybook: cb });
+  assert.equal((s2.getRows('L11', 0, 1)[0] as RecRow).c[1], '+14640'); // 0x3930
+});
+
+test('外部十进制：空格标橙；单元格详情显示解码后的数值', () => {
+  const cb = parseCopybook('01 R. 05 AMT PIC S9(5)V99. 05 CNT PIC 9(3).');
+  const s = session(Buffer.concat([rec(ascii('001234s 12')), rec(ascii('0012345012'))]));
+  s.setCopybook(10, { name: 'z.cpy', copybook: cb });
+  const rows = s.getRows('L10', 0, 2) as RecRow[];
+  assert.deepEqual(rows[0].c, ['001234s', ' 12']);
+  assert.deepEqual(rows[0].w, [1]); // CNT 含空格
+  assert.equal(s.cellInfo('L10', 0, 0)!.value, '-123.43'); // s = 0x73 → 末位 3、负号
+  assert.equal(s.cellInfo('L10', 1, 0)!.value, '+123.45');
+  assert.equal(s.cellInfo('L10', 0, 1)!.value, undefined); // 非法时不显示数值
+});
+
+test('REDEFINES：切换布局后列和值随之变化；重新分组后保留选择', () => {
+  const cb = parseCopybook(`
+    01 PAY-REC.
+       05 PAY-TYPE       PIC X.
+       05 PAY-DETAIL.
+          10 CARD-NO     PIC X(8).
+       05 BANK-DETAIL REDEFINES PAY-DETAIL.
+          10 BANK-CODE   PIC 9(4).
+          10 ACCOUNT     PIC 9(4).
+       05 CASH-DETAIL REDEFINES PAY-DETAIL.
+          10 CASH-AMT    PIC S9(7)V99 COMP-3.
+  `); // 1 + 8 = 9
+  const file = Buffer.concat([rec(ascii('B00011234')), rec(Buffer.concat([ascii('S'), hexBytes('00 01 23 45 6C'), ascii('   ')]))]);
+  const s = session(file);
+  s.setCopybook(9, { name: 'pay.cpy', copybook: cb });
+  let g = s.init().groups[0];
+  assert.deepEqual(g.choices, [{ id: 'PAY-REC.PAY-DETAIL', base: 'PAY-DETAIL', options: ['PAY-DETAIL', 'BANK-DETAIL', 'CASH-DETAIL'], selected: 'PAY-DETAIL' }]);
+  assert.deepEqual(g.columns.map((c) => c.name), ['PAY-TYPE', 'CARD-NO']);
+
+  s.setLayout(9, 'PAY-REC.PAY-DETAIL', 'BANK-DETAIL');
+  g = s.init().groups[0];
+  assert.equal(g.choices[0].selected, 'BANK-DETAIL');
+  assert.deepEqual(g.columns.map((c) => [c.name, c.start]), [['PAY-TYPE', 1], ['BANK-CODE', 2], ['ACCOUNT', 6]]);
+  assert.deepEqual((s.getRows('L9', 0, 1)[0] as RecRow).c, ['B', '0001', '1234']);
+
+  s.setLayout(9, 'PAY-REC.PAY-DETAIL', 'CASH-DETAIL');
+  const cash = s.getRows('L9', 1, 1)[0] as RecRow;
+  assert.deepEqual(cash.c, ['S', '+1234.56']);
+  assert.match(s.init().groups[0].banner.text, /一致/); // 区域大小按最大计算，总长仍为 9
+
+  // 按判别字段分组：每个值是新分组，各自指定 copybook，布局选择也各自独立
+  s.setDiscriminator(9, { start: 1, length: 1, type: 'text' });
+  s.setCopybook(9, { name: 'pay.cpy', copybook: cb }, undefined, 'B');
+  s.setCopybook(9, { name: 'pay.cpy', copybook: cb }, undefined, 'S');
+  const keys = s.init().groups.map((x) => [x.value, x.choices[0]?.selected]);
+  assert.deepEqual(keys, [['B', 'PAY-DETAIL'], ['S', 'PAY-DETAIL']]);
+  s.setLayout(9, 'PAY-REC.PAY-DETAIL', 'CASH-DETAIL', 'S');
+  s.setDiscriminator(9, null);
+  s.setDiscriminator(9, { start: 1, length: 1, type: 'text' });
+  assert.equal(s.init().groups.find((x) => x.value === 'S')!.choices[0].selected, 'CASH-DETAIL');
+  // 恢复默认
+  s.setLayout(9, 'PAY-REC.PAY-DETAIL', undefined, 'S');
+  assert.equal(s.init().groups.find((x) => x.value === 'S')!.choices[0].selected, 'PAY-DETAIL');
+});
+
+test('同长度的多个 01：可以切换记录定义', () => {
+  const cb = parseCopybook(`
+    01 REC-A.
+       05 A1 PIC X(4).
+    01 REC-B REDEFINES REC-A.
+       05 B1 PIC 9(2).
+       05 B2 PIC X(2).
+  `);
+  const s = session(rec(ascii('12AB')));
+  s.setCopybook(4, { name: 'ab.cpy', copybook: cb });
+  assert.deepEqual(s.init().groups[0].choices, [{ id: '01', base: '01', options: ['REC-A', 'REC-B'], selected: 'REC-A' }]);
+  s.setLayout(4, '01', 'REC-B');
+  assert.deepEqual((s.getRows('L4', 0, 1)[0] as RecRow).c, ['12', 'AB']);
+});

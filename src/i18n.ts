@@ -1,5 +1,5 @@
 /**
- * 界面文字的多语言支持（中文 / 日文）。
+ * 界面文字的多语言支持：日语为主要界面语言，VS Code 的显示语言为中文时显示中文。
  *
  * 不依赖 VS Code：扩展激活时根据 vscode.env.language 调用 setLocale()；
  * 以 "ui." 开头的键会随 init 消息发给 webview。
@@ -19,7 +19,8 @@ const zh = {
   'cpy.unknownStmt': '无法识别的语句已跳过：「{stmt}」',
   'cpy.unknownPrefix': '语句开头的「{text}」无法识别，已跳过',
   'cpy.occursDepending': '{name}: OCCURS DEPENDING ON 按最大次数展开',
-  'cpy.redefines': '{name}: REDEFINES {target} 已忽略（不占位置）',
+  'cpy.redefinesTarget': '{name}: REDEFINES 的对象 {target} 不在它前面的同级项目中，已忽略',
+  'cpy.sync': '{name}: SYNC 的对齐填充未计算，偏移可能与实际不同',
 
   // ---- 列布局 / 提示条 ----
   'col.body': '(正文)',
@@ -152,25 +153,30 @@ const zh = {
   'ui.reason': '原因',
   'ui.empty': '没有可显示的记录',
   'ui.cellMeta': '{pic} · 位置 {pos} · {len} 字节',
+  // ---- 布局切换（REDEFINES）、数值 ----
+  'ext.layout.choice': '可切换     : {base} → {list}',
+  'ui.layout': '布局',
+  'ui.layoutRecord': '01 记录定义',
+  'ui.layoutTitle': '同一区域的不同布局（REDEFINES），按所选布局显示字段',
+  'ui.cellValue': '数值 {value}',
 };
 
 export type MessageKey = keyof typeof zh;
 
 const ja: Record<MessageKey, string> = {
   // ---- RDW 扫描 ----
-  'rdw.resynced': '{msg}。{n} バイトをスキップし、オフセット {off} でレコード境界を再検出しました',
-  'rdw.noResync': '{msg}。以降は有効なレコード境界が見つからず、残り {n} バイトは解析されていません',
-  'rdw.tailShort':
-    'オフセット {off}：ファイル末尾の残りが {remain} バイトしかなく、1 レコードに必要な最小 {min} バイト（前後の RDW）に足りません。ファイルが途中で切れている可能性があります',
-  'rdw.truncated':
-    'オフセット {off}：前 RDW のレコード長は {len} バイトで {need} バイト必要ですが、ファイルの残りは {remain} バイトです（ファイルが途中で切れているか、前 RDW の長さが不正です）',
-  'rdw.mismatch': 'オフセット {off}：前 RDW の長さ={len}、後 RDW（オフセット {endOff}）の長さ={trailing} で、前後が一致しません',
+  'rdw.resynced': '{msg}。{n} バイトを読み飛ばし、オフセット {off} からレコード境界を再同期しました',
+  'rdw.noResync': '{msg}。以降は有効なレコード境界が見つからないため、残り {n} バイトは解析していません',
+  'rdw.tailShort': 'オフセット {off}：ファイル末尾の残りが {remain} バイトしかなく、1 レコードの最小長 {min} バイト（前後の RDW）に足りません。ファイルが途中で切れている可能性があります',
+  'rdw.truncated': 'オフセット {off}：前 RDW のレコード長 {len} バイトに対し（前後の RDW を含め {need} バイト必要）、ファイルの残りは {remain} バイトしかありません。ファイルの途中切れ、または前 RDW の長さ不正です',
+  'rdw.mismatch': 'オフセット {off}：前 RDW（長さ {len}）と後 RDW（オフセット {endOff}、長さ {trailing}）が一致しません',
 
   // ---- copybook 解析 ----
-  'cpy.unknownStmt': '解釈できない文をスキップしました：「{stmt}」',
-  'cpy.unknownPrefix': '文の先頭の「{text}」を解釈できないため、スキップしました',
+  'cpy.unknownStmt': '解釈できない文を読み飛ばしました：「{stmt}」',
+  'cpy.unknownPrefix': '文の先頭「{text}」を解釈できないため、読み飛ばしました',
   'cpy.occursDepending': '{name}: OCCURS DEPENDING ON は最大回数で展開しました',
-  'cpy.redefines': '{name}: REDEFINES {target} は無視しました（領域を占有しません）',
+  'cpy.redefinesTarget': '{name}: REDEFINES の対象 {target} が直前の同レベル項目にないため、無視しました',
+  'cpy.sync': '{name}: SYNC による境界合わせ（スラックバイト）は考慮していません。オフセットが実際と異なる可能性があります',
 
   // ---- 列布局 / 提示条 ----
   'col.body': '(レコード全体)',
@@ -178,16 +184,14 @@ const ja: Record<MessageKey, string> = {
   'banner.loadError': 'レコード長 {len}：{error}',
   'banner.noCopybook': 'レコード長 {len} の COPY句が未指定のため、レコード全体を表示しています。',
   'banner.noFields': 'COPY句「{name}」から項目を解析できなかったため、レコード全体を表示しています。{warn}',
-  'banner.records': '01 レベルが {n} 個あります（{list}）。{name} を使用します。',
+  'banner.records': '01 レベルの定義が {n} 個あります（{list}）。{name} を使用しています。',
   'banner.warnSuffix': '（解析メモ：{list}）',
   'banner.copyLonger': 'COPY句がレコードより {n} バイト長い',
   'banner.bodyLonger': 'レコードが COPY句より {n} バイト長い',
-  'banner.strict': '長さ不一致：レコード {body} バイト、COPY句「{name}」{copy} バイト（{diff}）。厳格モードのため項目に分割しません。',
-  'banner.ok': 'COPY句「{name}」：全長 {copy} バイト、{fields} 項目。レコード長と一致しています。{records}{warn}',
-  'banner.extra':
-    '長さ不一致：レコード {body} バイト、COPY句「{name}」{copy} バイト。超過した {extra} バイトは「{col}」列に表示しています。{records}{warn}',
-  'banner.short':
-    '長さ不一致：レコード {body} バイト、COPY句「{name}」{copy} バイトで {short} バイト不足しています。途中で切れた項目はオレンジ、まったく存在しない項目は「—」で表示しています。{records}{warn}',
+  'banner.strict': '長さ不一致：レコード {body} バイトに対し、COPY句「{name}」は {copy} バイトです（{diff}）。厳格モードのため項目に分割していません。',
+  'banner.ok': 'COPY句「{name}」：全長 {copy} バイト、{fields} 項目（レコード長と一致）。{records}{warn}',
+  'banner.extra': '長さ不一致：レコード {body} バイトに対し、COPY句「{name}」は {copy} バイトです。超過分 {extra} バイトは「{col}」列に表示しています。{records}{warn}',
+  'banner.short': '長さ不一致：レコード {body} バイトに対し、COPY句「{name}」は {copy} バイトで {short} バイト不足しています。途中で切れた項目はオレンジ、存在しない項目は「—」で表示しています。{records}{warn}',
   'list.sep': '、',
   'warn.sep': '／',
 
@@ -245,8 +249,8 @@ const ja: Record<MessageKey, string> = {
   'ext.disc.counts': '値ごとのレコード件数',
   'ext.disc.count': '{n} 件',
   'ext.disc.valuesTitle': '{label} の値',
-  'ext.disc.clearConfirm': 'レコード長 {len} の「項目値で切り替え」を解除しますか？値ごとの COPY句の設定も削除されます。',
-  'ext.disc.clearButton': '解除',
+  'ext.disc.clearConfirm': 'レコード長 {len} の「項目値で切り替え」を解除しますか？値ごとの COPY句の指定も削除されます。',
+  'ext.disc.clearButton': '解除する',
 
   // ---- 导出 ----
   'ext.export.formatTitle': 'エクスポート形式',
@@ -256,7 +260,7 @@ const ja: Record<MessageKey, string> = {
   'ext.export.folderTitle': 'エクスポート先のフォルダーを選択',
   'ext.export.folderButton': 'このフォルダーにエクスポート',
   'ext.export.overwrite': '次の {n} 個のファイルは既に存在します。上書きしますか？{list}',
-  'ext.export.overwriteButton': '上書き',
+  'ext.export.overwriteButton': '上書きする',
   'ext.export.progress': '{name} をエクスポート中',
   'ext.export.done': '{n} 件をエクスポートしました：{path}',
   'ext.export.doneAll': '{files} ファイル（計 {n} 件）をエクスポートしました：{dir}',
@@ -272,16 +276,16 @@ const ja: Record<MessageKey, string> = {
   'ui.exportAllTitle': 'タブごとに 1 ファイルとしてエクスポートします',
   'ui.records': '{n} 件',
   'ui.errors': 'エラー {n} 件',
-  'ui.autoPacked': 'COMP-3 を自動判別',
-  'ui.autoPackedTitle': 'COPY句がない場合、レコード中の COMP-3 を自動判別して [数値] で表示します（推定のため誤判定の可能性があります）',
-  'ui.hideFiller': 'FILLER 列を隠す',
-  'ui.hideFillerTitle': '項目名で列を隠します（設定：rdwViewer.hiddenFieldPattern）',
+  'ui.autoPacked': 'COMP-3 自動判別',
+  'ui.autoPackedTitle': 'COPY句が未指定のとき、レコード中の COMP-3 を自動判別して [数値] で表示します（推定のため、誤判定の可能性があります）',
+  'ui.hideFiller': 'FILLER を非表示',
+  'ui.hideFillerTitle': '項目名が一致する列を非表示にします（設定：rdwViewer.hiddenFieldPattern）',
   'ui.encoding': '文字コード',
   'ui.bytes': '{n} バイト',
   'ui.noCopybook': 'COPY句未指定',
   'ui.errorTab': 'エラー',
   'ui.orderTab': 'ファイル順',
-  'ui.orderTabTitle': 'ファイル上の順序で表示し、COPY句が切り替わる箇所に見出しを挿入します',
+  'ui.orderTabTitle': 'ファイル上の順序で表示し、COPY句が切り替わる位置に見出し行を挿入します',
   'ui.orderBanner': 'ファイル順ビュー：{n} グループ',
   'ui.orderUnmapped': '、うち {n} グループは COPY句未指定（各タブで選択してください）',
   'ui.orderErrors': '、エラー {n} 件',
@@ -290,30 +294,36 @@ const ja: Record<MessageKey, string> = {
   'ui.choose': 'COPY句を選択…',
   'ui.change': 'COPY句を変更…',
   'ui.detail': '解析詳細',
-  'ui.detailTitle': '各項目の位置と長さをエディターに一覧表示します',
-  'ui.clear': 'クリア',
+  'ui.detailTitle': '各項目の位置・長さをエディターに一覧表示します',
+  'ui.clear': '指定解除',
   'ui.disc': '項目値で切り替え…',
   'ui.discTitle': '同じレコード長でも、ある項目の値によって異なる COPY句を使います',
-  'ui.undisc': '切り替えを解除',
+  'ui.undisc': '切り替え解除',
   'ui.packedTitle': '自動判別した COMP-3（誤判定の可能性があります）',
   'ui.hdrName': '項目名',
   'ui.hdrPic': '属 性',
   'ui.hdrPos': '相 対 位 置',
   'ui.offset': 'オフセット',
-  'ui.skipped': 'スキップ',
+  'ui.skipped': '読み飛ばし',
   'ui.reason': '原因',
   'ui.empty': '表示するレコードがありません',
   'ui.cellMeta': '{pic} · 位置 {pos} · {len} バイト',
+  // ---- 布局切换（REDEFINES）、数值 ----
+  'ext.layout.choice': '切り替え   : {base} → {list}',
+  'ui.layout': 'レイアウト',
+  'ui.layoutRecord': '01 レコード定義',
+  'ui.layoutTitle': '同じ領域の別レイアウト（REDEFINES）です。選択したレイアウトで項目を表示します',
+  'ui.cellValue': '数値 {value}',
 };
 
-let dict: Record<MessageKey, string> = zh;
-let current = 'zh';
+let dict: Record<MessageKey, string> = ja;
+let current = 'ja';
 
-/** 根据 VS Code 的显示语言切换（ja* → 日文，其他 → 中文） */
+/** 根据 VS Code 的显示语言切换：中文（zh*）显示中文，其他语言一律显示日语（主要界面语言） */
 export function setLocale(lang: string | undefined): void {
-  const isJa = (lang ?? '').toLowerCase().startsWith('ja');
-  dict = isJa ? ja : zh;
-  current = isJa ? 'ja' : 'zh';
+  const isZh = (lang ?? '').toLowerCase().startsWith('zh');
+  dict = isZh ? zh : ja;
+  current = isZh ? 'zh' : 'ja';
 }
 
 export function getLocale(): string {

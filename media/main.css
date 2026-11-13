@@ -85,6 +85,7 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 /* ---------- 提示条 ---------- */
 #banner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
@@ -96,6 +97,19 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 #banner.error { border-left-color: var(--err); }
 #banner .text { flex: 1; }
 #banner:empty { display: none; }
+
+/* ---------- 布局切换（REDEFINES） ---------- */
+#layouts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+#layouts .lt { font-weight: 600; }
+#layouts label { display: inline-flex; align-items: center; gap: 4px; }
+#cellbar .num { color: var(--vscode-textLink-foreground, #3794ff); }
 
 /* ---------- 单元格信息条（表格上方：字段名 / 值 / 原始字节） ---------- */
 #cellbar {
