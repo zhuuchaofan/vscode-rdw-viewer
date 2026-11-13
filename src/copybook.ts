@@ -30,10 +30,25 @@ export interface CopyField {
   scale: number;
 }
 
-export interface Copybook {
+/** copybook 中的一个顶层（01）记录定义 */
+export interface CopyRecord {
+  name: string;
   fields: CopyField[];
   totalLength: number;
+}
+
+export interface Copybook {
+  /** 第一个顶层记录的字段（便于只有一个 01 的常见情况） */
+  fields: CopyField[];
+  totalLength: number;
+  /** 所有顶层记录；有多个 01 时可按记录长度选用 */
+  records: CopyRecord[];
   warnings: string[];
+}
+
+/** 选用总长度等于记录长度的顶层定义；没有则用第一个 */
+export function selectRecord(cb: Copybook, bodyLen: number): CopyRecord | undefined {
+  return cb.records.find((r) => r.totalLength === bodyLen) ?? cb.records[0];
 }
 
 interface Node {
@@ -49,41 +64,52 @@ interface Node {
 
 const CLAUSE_STARTS = new Set([
   'PIC', 'PICTURE', 'USAGE', 'COMP', 'COMP-1', 'COMP-2', 'COMP-3', 'COMP-4', 'COMP-5',
-  'BINARY', 'PACKED-DECIMAL', 'DISPLAY', 'OCCURS', 'REDEFINES', 'SIGN', 'SYNC', 'SYNCHRONIZED',
+  'BINARY', 'PACKED-DECIMAL', 'DISPLAY', 'NATIONAL', 'DISPLAY-1', 'OCCURS', 'REDEFINES',
+  'COMPUTATIONAL', 'COMPUTATIONAL-1', 'COMPUTATIONAL-2', 'COMPUTATIONAL-3', 'COMPUTATIONAL-4', 'COMPUTATIONAL-5', 'SIGN', 'SYNC', 'SYNCHRONIZED',
   'JUSTIFIED', 'JUST', 'BLANK', 'EXTERNAL', 'GLOBAL', 'INDEXED',
 ]);
 
 const USAGE_WORDS = new Set([
   'COMP', 'COMP-1', 'COMP-2', 'COMP-3', 'COMP-4', 'COMP-5', 'BINARY', 'PACKED-DECIMAL', 'DISPLAY',
+  'NATIONAL', 'DISPLAY-1',
 ]);
 
+/** COMPUTATIONAL-3 → COMP-3 等 */
+function normalizeUsage(u: string): string {
+  return u.replace(/^COMPUTATIONAL/, 'COMP');
+}
+
+/** 固定格式行：1~6 列为空格或序号数字，第 7 列为指示区 */
+const FIXED_LINE = /^(?: {6}|\d{6})[ *\/\-D$]/;
+
+/**
+ * 去掉注释、序号区（1~6 列）、标识区（73~80 列），返回拼接后的源码。
+ * 逐行判断：以 6 位序号开头的行、或文件大多数行都是固定格式时符合固定格式的行，按固定格式处理；
+ * 其余行按自由格式处理。这样一两行格式不规整也不会让整个文件解析失败。
+ */
 function normalizeSource(text: string): string {
   const lines = text.replace(/\r\n?/g, '\n').split('\n').map((l) => l.replace(/\t/g, '    '));
   const nonEmpty = lines.filter((l) => l.trim().length > 0);
-  // 固定格式的 1~6 列要么全空格，要么全是序号数字（避免把缩进 4 格的自由格式误判成固定格式）
-  const fixedLike = nonEmpty.filter((l) => /^(?: {6}|\d{6})[ *\/\-D]/.test(l)).length;
-  // 必须所有非空行都符合才按固定格式处理；只要有一行不符合就当自由格式，宁可保守
-  const fixed = nonEmpty.length > 0 && fixedLike === nonEmpty.length;
+  const fixedLike = nonEmpty.filter((l) => FIXED_LINE.test(l)).length;
+  const mostlyFixed = nonEmpty.length > 0 && fixedLike * 2 >= nonEmpty.length;
 
   const out: string[] = [];
   for (const raw of lines) {
-    if (fixed) {
-      if (raw.length < 7) {
-        continue;
-      }
-      const indicator = raw[6];
+    let content: string;
+    if (/^\d{6}/.test(raw) || (mostlyFixed && FIXED_LINE.test(raw))) {
+      const indicator = raw[6] ?? ' ';
       if (indicator === '*' || indicator === '/' || indicator === 'D') {
         continue;
       }
-      out.push(raw.slice(7, 72));
+      content = raw.slice(7, 72);
     } else {
-      const t = raw.trim();
-      if (t.startsWith('*')) {
+      content = raw.trim();
+      if (content.startsWith('*')) {
         continue;
       }
-      const c = t.indexOf('*>');
-      out.push(c >= 0 ? t.slice(0, c) : t);
     }
+    const c = content.indexOf('*>');
+    out.push(c >= 0 ? content.slice(0, c) : content);
   }
   return out.join(' ');
 }
@@ -148,7 +174,8 @@ export function picInfo(pic: string, usage: string, signSeparate: boolean): PicI
     if (sym === 'S' || sym === 'P') {
       continue;
     }
-    len += n * (sym === 'CR' || sym === 'DB' ? 2 : 1);
+    // N（日文/National）、G（DBCS）每个字符 2 字节
+    len += n * (sym === 'CR' || sym === 'DB' || sym === 'N' || sym === 'G' ? 2 : 1);
     if (afterV) {
       scale += n;
     }
@@ -183,10 +210,25 @@ export function picInfo(pic: string, usage: string, signSeparate: boolean): PicI
   }
 }
 
+const LEVEL_RE = /^(?:0?[1-9]|[1-4][0-9]|66|77|88)$/;
+/** 可以安静跳过的非数据描述语句 */
+const IGNORABLE = new Set(['EJECT', 'SKIP1', 'SKIP2', 'SKIP3', 'COPY', 'REPLACE', 'TITLE']);
+
 function parseStatement(stmt: string, warnings: string[]): Node | undefined {
-  const tokens = stmt.match(/'(?:[^']|'')*'|"(?:[^"]|"")*"|[^\s]+/g);
-  if (!tokens || tokens.length === 0 || !/^\d{1,2}$/.test(tokens[0])) {
+  let tokens: string[] = stmt.match(/'(?:[^']|'')*'|"(?:[^"]|"")*"|[^\s]+/g) ?? [];
+  if (tokens.length === 0) {
     return undefined;
+  }
+  if (!LEVEL_RE.test(tokens[0])) {
+    const at = tokens.findIndex((t) => LEVEL_RE.test(t));
+    if (at < 0) {
+      if (!IGNORABLE.has(tokens[0].toUpperCase())) {
+        warnings.push(`无法识别的语句已跳过：「${stmt.slice(0, 40)}」`);
+      }
+      return undefined;
+    }
+    warnings.push(`语句开头的「${tokens.slice(0, at).join(' ').slice(0, 30)}」无法识别，已跳过`);
+    tokens = tokens.slice(at);
   }
   const level = parseInt(tokens[0], 10);
   if (level === 66 || level === 88) {
@@ -224,10 +266,10 @@ function parseStatement(stmt: string, warnings: string[]): Node | undefined {
       if (up(i) === 'IS') {
         i++;
       }
-      node.usage = up(i) || 'DISPLAY';
+      node.usage = normalizeUsage(up(i) || 'DISPLAY');
       i++;
-    } else if (USAGE_WORDS.has(k)) {
-      node.usage = k;
+    } else if (USAGE_WORDS.has(normalizeUsage(k))) {
+      node.usage = normalizeUsage(k);
       i++;
     } else if (k === 'OCCURS') {
       i++;
@@ -318,13 +360,14 @@ export function parseCopybook(text: string): Copybook {
     stack.push(node);
   }
 
-  const fields: CopyField[] = [];
-  let total = 0;
-  if (roots.length > 1) {
-    warnings.push(`copybook 含 ${roots.length} 个顶层定义，只使用第一个（${roots[0].name}）`);
+  const records: CopyRecord[] = [];
+  for (const root of roots) {
+    const fields: CopyField[] = [];
+    const total = flatten(root, 0, '', fields, warnings);
+    if (fields.length > 0) {
+      records.push({ name: root.name, fields, totalLength: total });
+    }
   }
-  if (roots.length > 0) {
-    total = flatten(roots[0], 0, '', fields, warnings);
-  }
-  return { fields, totalLength: total, warnings };
+  const first = records[0];
+  return { fields: first?.fields ?? [], totalLength: first?.totalLength ?? 0, records, warnings };
 }

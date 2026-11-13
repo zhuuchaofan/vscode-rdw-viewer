@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { RdwSession } from './session';
-import { parseCopybook, Copybook } from './copybook';
+import { parseCopybook, Copybook, selectRecord } from './copybook';
 import { MismatchMode } from './layout';
 
 const COPYBOOK_GLOB = '**/*.{cpy,CPY,cbl,CBL,cob,COB,copy,COPY}';
@@ -143,6 +143,46 @@ async function pickCopybook(length: number, store: MappingStore): Promise<vscode
   return picked.uri;
 }
 
+/** 生成「解析详情」文本：copybook 中每个字段的位置、长度，便于和 copybook 原文对照 */
+function describeLayout(session: RdwSession, length: number): string {
+  const g = session.groups.find((x) => x.length === length);
+  if (!g || !g.copybook) {
+    return `长度 ${length} 尚未指定 copybook。`;
+  }
+  const cb = g.copybook.copybook;
+  const lines: string[] = [];
+  lines.push(`copybook   : ${g.copybook.name}`);
+  lines.push(`记录长度   : ${length} 字节`);
+  lines.push(`01 定义    : ${cb.records.map((r) => `${r.name}（${r.totalLength} 字节）`).join('、') || '（无）'}`);
+  const rec = selectRecord(cb, length);
+  if (rec) {
+    lines.push(`选用       : ${rec.name}，总长 ${rec.totalLength} 字节，${rec.fields.length} 个字段`);
+    if (rec.totalLength !== length) {
+      lines.push(`差异       : ${rec.totalLength > length ? 'copybook 多' : 'copybook 少'} ${Math.abs(rec.totalLength - length)} 字节`);
+    }
+  }
+  if (cb.warnings.length) {
+    lines.push('', '解析提示:');
+    cb.warnings.forEach((w) => lines.push(`  - ${w}`));
+  }
+  if (rec) {
+    lines.push('', ['No.'.padStart(5), '位置'.padStart(6), '长度'.padStart(6), '结束'.padStart(6), '  属性'.padEnd(26), '字段名'].join(' '));
+    rec.fields.forEach((f, i) => {
+      lines.push(
+        [
+          String(i + 1).padStart(5),
+          String(f.offset + 1).padStart(6),
+          String(f.length).padStart(6),
+          String(f.offset + f.length).padStart(6),
+          ('  ' + f.pic).padEnd(26),
+          f.name,
+        ].join(' ')
+      );
+    });
+  }
+  return lines.join('\n') + '\n';
+}
+
 async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Promise<void> {
   let uri = target;
   if (!uri) {
@@ -195,11 +235,10 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
   const nonce = Array.from({ length: 24 }, () => Math.floor(Math.random() * 36).toString(36)).join('');
   const js = web.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'main.js'));
   const css = web.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'main.css'));
-  // 表格的列宽、行位置通过行内 style 设置，必须允许 style-src 'unsafe-inline'，否则列宽失效、
-  // 被撑到几千像素。脚本仍然只允许带 nonce 的那一个。
+  // 前端不使用行内 style 属性（列宽、行位置通过 CSSOM 设置），因此 CSP 不需要 'unsafe-inline'。
   web.html = `<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${web.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${web.cspSource}; script-src 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="${css}"><title>RDW Viewer</title></head>
 <body><div id="app"></div><script nonce="${nonce}" src="${js}"></script></body></html>`;
@@ -207,7 +246,12 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
   let gen = 0;
   const sendInit = () => {
     gen++;
-    web.postMessage({ ...session.init(), gen, hiddenPattern: config().hiddenPattern });
+    web.postMessage({
+      ...session.init(),
+      gen,
+      hiddenPattern: config().hiddenPattern,
+      version: String(ctx.extension.packageJSON.version ?? ''),
+    });
   };
 
   web.onDidReceiveMessage(async (msg) => {
@@ -234,6 +278,14 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
           await applyMapping();
           sendInit();
         }
+        break;
+      }
+      case 'showLayout': {
+        const doc = await vscode.workspace.openTextDocument({
+          content: describeLayout(session, msg.length),
+          language: 'plaintext',
+        });
+        await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside, preview: true });
         break;
       }
       case 'clearCopybook':

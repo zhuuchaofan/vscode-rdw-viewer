@@ -181,3 +181,23 @@ test('COMP-3 / COMP 字段解码成数值，非法内容回退十六进制并标
   s2.setCopybook(20, { name: 'c.cpy', copybook: cb });
   assert.equal((s2.getRows('L20', 0, 1)[0] as RecRow).c[4], '+31488');
 });
+
+test('多个 01：按记录长度自动选用对应定义，并在提示条中说明', () => {
+  const cb = parseCopybook(`
+    01 HDR-REC.
+       05 H1 PIC X(4).
+    01 DATA-REC.
+       05 D1 PIC X(3).
+       05 D2 PIC X(5).
+  `);
+  const s = session(Buffer.concat([rec(ascii('ABCDEFGH')), rec(ascii('WXYZ'))]));
+  s.setCopybook(8, { name: 'm.cpy', copybook: cb });
+  s.setCopybook(4, { name: 'm.cpy', copybook: cb });
+  const init = s.init();
+  const g8 = init.groups.find((g) => g.length === 8)!;
+  const g4 = init.groups.find((g) => g.length === 4)!;
+  assert.deepEqual(g8.columns.map((c) => c.name), ['D1', 'D2']);
+  assert.equal(g8.banner.level, 'info');
+  assert.match(g8.banner.text, /选用 DATA-REC/);
+  assert.deepEqual(g4.columns.map((c) => c.name), ['H1']);
+});

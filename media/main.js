@@ -133,6 +133,7 @@
     const sizeKB = d.size >= 1048576 ? (d.size / 1048576).toFixed(1) + ' MB' : (d.size / 1024).toFixed(1) + ' KB';
     $toolbar.innerHTML =
       `<span class="file">${esc(d.fileName)}</span>` +
+      (d.version ? `<span class="meta">v${esc(d.version)}</span>` : '') +
       `<span class="meta">${sizeKB} · ${d.total - d.errorCount} 条记录` +
       (d.errorCount ? ` · <span class="st-err">${d.errorCount} 处错误</span>` : '') +
       `</span><span class="spacer"></span>` +
@@ -195,6 +196,9 @@
       level = g.banner.level;
       text = g.banner.text;
       buttons = `<button class="primary" data-act="choose">${g.copybookName ? '更换 copybook…' : '选择 copybook…'}</button>`;
+      if (g.copybookName) {
+        buttons += '<button data-act="detail" title="在编辑器中列出每个字段的位置和长度">解析详情</button>';
+      }
       if (g.copybookName || g.banner.level === 'error') {
         buttons += '<button data-act="clear">清除</button>';
       }
@@ -205,7 +209,8 @@
     $banner.querySelectorAll('button').forEach((b) => {
       b.onclick = () => {
         if (!g) return;
-        vscode.postMessage({ type: b.dataset.act === 'choose' ? 'chooseCopybook' : 'clearCopybook', length: g.length });
+        const type = { choose: 'chooseCopybook', clear: 'clearCopybook', detail: 'showLayout' }[b.dataset.act];
+        vscode.postMessage({ type, length: g.length });
       };
     });
   }
@@ -214,16 +219,31 @@
     $cellbar.innerHTML = '<span class="hint">点击单元格查看字段值和原始字节</span>';
   }
 
+  /**
+   * 把 data-top / data-w 应用为实际样式。
+   * Webview 的 CSP 可能禁止行内 style 属性，所以不在 HTML 里写 style="..."，而是通过 CSSOM 设置。
+   */
+  function applyLayout(root) {
+    const vw = viewWidth();
+    root.querySelectorAll('.row').forEach((r) => {
+      if (r.dataset.top !== undefined) r.style.top = r.dataset.top + 'px';
+      r.style.width = vw;
+    });
+    root.querySelectorAll('[data-w]').forEach((c) => {
+      c.style.width = c.dataset.w + 'px';
+    });
+  }
+
   /* ---------- 表头 ---------- */
   function headerRowHtml(key, k, isAbs, top) {
     const { vis } = visibleCols(key);
     const label = key === ERR_VIEW ? '#' : ['項目名', '属 性', '相 対 位 置'][k];
-    let html = `<div class="row" ${isAbs ? `style="top:${top}px;width:${viewWidth()}"` : ''}>`;
+    let html = `<div class="row" ${isAbs ? `data-top="${top}"` : ''}>`;
     html += `<div class="c l lh hd">${label}</div>`;
     for (const { col, px } of vis) {
       const cls = (k === 0 ? '' : k === 1 ? ' pic' : ' pos') + (isNumeric(col) ? ' num' : '');
       const text = k === 0 ? col.name : k === 1 ? col.pic : col.start || '';
-      html += `<div class="c hd${cls} ${col.kind}" style="width:${px}px" title="${esc(text)}">${esc(text)}</div>`;
+      html += `<div class="c hd${cls} ${col.kind}" data-w="${px}" title="${esc(text)}">${esc(text)}</div>`;
     }
     return html + '</div>';
   }
@@ -239,12 +259,12 @@
     const rows = [];
     for (let k = 0; k < hdrRowsOf(state.view); k++) rows.push(headerRowHtml(state.view, k, false));
     $hdr.innerHTML = rows.join('');
+    applyLayout($hdr);
   }
 
   /* ---------- 行 ---------- */
   function rowHtml(row, i, view) {
     const top = i * ROW_H;
-    const width = viewWidth();
     if (row.t === 'hdr') {
       return headerRowHtml(row.g, row.k, true, top);
     }
@@ -253,7 +273,7 @@
     const { vis } = visibleCols(key);
     const warn = !isErr && row.w.length > 0;
     const status = isErr ? '<span class="st-err">✖</span>' : warn ? '<span class="st-warn">⚠</span>' : '';
-    let html = `<div class="row ${isErr ? 'err' : ''}" style="top:${top}px;width:${width}">`;
+    let html = `<div class="row ${isErr ? 'err' : ''}" data-top="${top}">`;
     html += `<div class="c l l0">${row.e + 1}</div>`;
     html += `<div class="c l l1" title="偏移 ${row.o}">0x${row.o.toString(16).toUpperCase().padStart(8, '0')}</div>`;
     html += `<div class="c l l2">${status}</div>`;
@@ -264,7 +284,7 @@
       const sel =
         state.selected && state.selected.view === view && state.selected.row === i && state.selected.col === ci ? ' sel' : '';
       const num = isNumeric(col) && col.kind !== 'missing' ? ' num' : '';
-      html += `<div class="c f${isW ? ' w' : ''}${sel}${num}" style="width:${px}px" data-r="${i}" data-c="${ci}" title="${esc(text)}">${esc(text)}</div>`;
+      html += `<div class="c f${isW ? ' w' : ''}${sel}${num}" data-w="${px}" data-r="${i}" data-c="${ci}" title="${esc(text)}">${esc(text)}</div>`;
     }
     return html + '</div>';
   }
@@ -318,6 +338,7 @@
       if (row) html += rowHtml(row, i, view);
     }
     $rows.innerHTML = html;
+    applyLayout($rows);
   }
 
   function resetView(keepScroll) {

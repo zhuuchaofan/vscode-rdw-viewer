@@ -89,3 +89,66 @@ test('V 之后的位数记为小数位数；字段带 USAGE', () => {
     ['B', 'DISPLAY', 0, 2],
   ]);
 });
+
+test('固定格式：有一行不规整时，其余带序号的行和 73~80 列标识仍被正确处理', () => {
+  const pad = (s: string) => s.padEnd(72, ' ');
+  const lines = [
+    pad('000100*    取引ファイル') + 'CKLS1020',
+    pad('000200 01  CKLS-REC.') + 'CKLS1020',
+    pad('000300     05  KEY-ID      PIC X(10).') + 'CKLS1020',
+    '\t05  ODD-LINE   PIC X(5).', // Tab 缩进，不符合固定格式
+    pad('000500     05  AMT         PIC S9(7) COMP-3.') + 'CKLS1020',
+    pad('000600     05  FILLER      PIC X(3).') + 'CKLS1020',
+  ];
+  const cb = parseCopybook(lines.join('\r\n'));
+  assert.deepEqual(cb.fields.map((f) => [f.name, f.offset, f.length]), [
+    ['KEY-ID', 0, 10],
+    ['ODD-LINE', 10, 5],
+    ['AMT', 15, 4],
+    ['FILLER', 19, 3],
+  ]);
+  assert.equal(cb.totalLength, 22);
+  assert.deepEqual(cb.warnings, []);
+});
+
+test('PIC N / G 每字符 2 字节', () => {
+  assert.equal(picInfo('N(10)', 'DISPLAY', false).length, 20);
+  assert.equal(picInfo('NNN', 'NATIONAL', false).length, 6);
+  assert.equal(picInfo('G(3)', 'DISPLAY-1', false).length, 6);
+  const cb = parseCopybook('01 R. 05 名前 PIC N(5). 05 B PIC X(2) USAGE DISPLAY.');
+  assert.equal(cb.totalLength, 12);
+});
+
+test('COMPUTATIONAL-3 等全称写法', () => {
+  const cb = parseCopybook(`
+    01 R.
+       05 A PIC S9(5) COMPUTATIONAL-3.
+       05 B PIC S9(4) USAGE IS COMPUTATIONAL.
+  `);
+  assert.deepEqual(cb.fields.map((f) => [f.usage, f.length]), [
+    ['COMP-3', 3],
+    ['COMP', 2],
+  ]);
+});
+
+test('多个 01：保留全部，并可按记录长度选用', async () => {
+  const { selectRecord } = await import('../src/copybook');
+  const cb = parseCopybook(`
+    01 HDR-REC.
+       05 H1 PIC X(10).
+    01 DATA-REC.
+       05 D1 PIC X(20).
+  `);
+  assert.deepEqual(cb.records.map((r) => [r.name, r.totalLength]), [
+    ['HDR-REC', 10],
+    ['DATA-REC', 20],
+  ]);
+  assert.equal(selectRecord(cb, 20)!.name, 'DATA-REC');
+  assert.equal(selectRecord(cb, 99)!.name, 'HDR-REC');
+});
+
+test('语句开头有无法识别的内容：跳过并提示，字段不丢失', () => {
+  const cb = parseCopybook('01 R. 05 A PIC X(2). GARBAGE 05 B PIC X(3).');
+  assert.deepEqual(cb.fields.map((f) => f.name), ['A', 'B']);
+  assert.ok(cb.warnings.some((w) => w.includes('GARBAGE')));
+});
