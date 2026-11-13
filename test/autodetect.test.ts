@@ -6,30 +6,30 @@ import { ascii, hexBytes } from './helpers';
 const sjis = new TextDecoder('shift_jis');
 const show = (bytes: Buffer) => plainSegments(formatSegments(bytes, segmentBody(bytes), sjis));
 
-test('截图中的真实记录：COMP-3 与文字正确切分', () => {
+test('典型记录：COMP-3 与文字正确切分', () => {
   const body = Buffer.concat([
-    hexBytes('11 80 0C'),
-    ascii('1FVAO-M006'),
+    hexBytes('10 10 0C'),
+    ascii('1ABCD-0001'),
     hexBytes('00 00 00 0C'),
     hexBytes('00 00 00 0C'),
-    hexBytes('22 50 93 0C'),
-    hexBytes('22 51 00 6C'),
+    hexBytes('22 41 07 0C'),
+    hexBytes('22 41 08 6C'),
     ascii('     '),
   ]);
-  assert.equal(show(body), '[+11800]1FVAO-M006[+0][+0][+2250930][+2251006]     ');
+  assert.equal(show(body), '[+10100]1ABCD-0001[+0][+0][+2241070][+2241086]     ');
 });
 
-test('1600 字节记录开头：多个相邻 COMP-3', () => {
+test('多个相邻 COMP-3，中间夹一个数字字符', () => {
   // レコードID S9(5) / データ種別 9(1) / KEY科目コード S9(2) / KEY金庫番号 S9(2) / KEY店番号 S9(3) / KEY会員番号 S9(5)
   const body = Buffer.concat([
-    hexBytes('11 85 0C'),
+    hexBytes('10 20 0C'),
     ascii('2'),
     hexBytes('04 8C'),
     hexBytes('00 1C'),
     hexBytes('01 2C'),
     hexBytes('90 00 0C'),
   ]);
-  assert.equal(show(body), '[+11850]2[+48][+1][+12][+90000]');
+  assert.equal(show(body), '[+10200]2[+48][+1][+12][+90000]');
 });
 
 test('文字末尾的数字不会被吞进 COMP-3', () => {
@@ -52,12 +52,12 @@ test('全空格、空正文', () => {
   assert.equal(show(Buffer.alloc(0)), '');
 });
 
-test('截图中 1600 字节记录：KEY顧客番号 S9(8) 等连续 COMP-3', () => {
+test('连续多个 COMP-3（含 S9(8)）', () => {
   const body = Buffer.concat([
-    hexBytes('11 85 0C'), ascii('2'), hexBytes('04 8C'), hexBytes('00 1C'), hexBytes('01 2C'),
-    hexBytes('90 10 0C'), hexBytes('00 0C'), hexBytes('01 30 14 45 4C'),
+    hexBytes('10 20 0C'), ascii('2'), hexBytes('04 8C'), hexBytes('00 1C'), hexBytes('01 2C'),
+    hexBytes('90 30 0C'), hexBytes('00 0C'), hexBytes('01 05 07 09 4C'),
   ]);
-  assert.equal(show(body), '[+11850]2[+48][+1][+12][+90100][+0][+13014454]');
+  assert.equal(show(body), '[+10200]2[+48][+1][+12][+90300][+0][+10507094]');
 });
 
 test('COMP-3 以 0x20 开头：紧跟在另一个 COMP-3 后时识别为数值；紧跟文字时视为文字末尾的空格', () => {

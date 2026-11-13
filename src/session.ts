@@ -2,6 +2,7 @@
  * 一个已打开文件的数据模型：持有文件内容、RDW 索引、按长度分组的结果，
  * 并按需（虚拟滚动）解码出行数据。不依赖 VS Code，便于测试。
  */
+import { t } from './i18n';
 import { RdwIndex, scanRdw, RDW_SIZE } from './rdw';
 import { Copybook } from './copybook';
 import { Banner, Column, MismatchMode, buildColumns, displayWidth } from './layout';
@@ -19,7 +20,7 @@ export interface Discriminator {
 }
 
 export function discriminatorLabel(d: Discriminator): string {
-  return `位置 ${d.start}~${d.start + d.length - 1}（${d.type === 'comp3' ? 'COMP-3' : '文字'}）`;
+  return t('disc.label', { from: d.start, to: d.start + d.length - 1, type: d.type === 'comp3' ? 'COMP-3' : t('disc.text') });
 }
 
 type CopybookRef = { name: string; copybook: Copybook };
@@ -144,16 +145,16 @@ export class RdwSession {
   private discValue(entry: number, d: Discriminator): string {
     const bodyLen = this.index.lengths[entry];
     if (d.start - 1 + d.length > bodyLen) {
-      return '(超出记录长度)';
+      return t('disc.outOfRange');
     }
     const base = this.index.offsets[entry] + RDW_SIZE + d.start - 1;
     const bytes = this.buf.subarray(base, base + d.length);
     if (d.type === 'comp3') {
       const signed = (bytes[bytes.length - 1] & 0x0f) !== 0xf;
       const r = decodePacked(bytes, 0, signed);
-      return r.ok ? r.text : `(无效 ${toHex(bytes)})`;
+      return r.ok ? r.text : t('disc.invalid', { hex: toHex(bytes) });
     }
-    return sanitize(this.decoder.decode(bytes)).trimEnd() || '(空白)';
+    return sanitize(this.decoder.decode(bytes)).trimEnd() || t('disc.blank');
   }
 
   private buildGroups(): void {
@@ -225,7 +226,7 @@ export class RdwSession {
     g.banner = set.banner;
     const d = this.discriminators.get(g.length);
     if (g.value !== undefined && d) {
-      g.banner = { ...g.banner, text: `【${discriminatorLabel(d)} = ${g.value}】${g.banner.text}` };
+      g.banner = { ...g.banner, text: t('disc.bannerPrefix', { label: discriminatorLabel(d), value: g.value }) + g.banner.text };
     }
     this.fitBodyWidth(g);
   }

@@ -1,0 +1,11 @@
+{
+  "displayName": "RDW Viewer",
+  "description": "RDW（前後 4 バイト・リトルエンディアン）付き可変長レコードファイルのビューアー。COBOL の COPY句による項目表示、COMP-3 のデコードに対応",
+  "command.open": "RDW Viewer で開く",
+  "config.title": "RDW Viewer",
+  "config.encoding": "レコード本体の既定の文字コード（WHATWG のエンコーディング名。例：shift_jis、utf-8、euc-jp）。",
+  "config.lengthMismatch": "レコード長と COPY句の全長が一致しない場合：lenient=可能な範囲で項目に分割して差異を表示、strict=分割せずレコード全体を表示。",
+  "config.binaryEndian": "COMP / BINARY（2 進）項目のバイト順。COMP-3（パック 10 進）には影響しません。",
+  "config.autoDetectPacked": "COPY句が未指定の場合、レコード中の COMP-3（パック 10 進）を自動判別して [数値] で表示します。推定のため誤判定の可能性があります。",
+  "config.hiddenFieldPattern": "「FILLER 列を隠す」がオンのとき、項目名がこの正規表現（大文字小文字を区別しない）に一致する列を隠します。例：FILLER|COMMA"
+}

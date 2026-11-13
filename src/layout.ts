@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { Copybook, FieldType, selectRecord } from './copybook';
 
 export type ColumnKind = 'field' | 'partial' | 'missing' | 'extra' | 'body';
@@ -6,7 +7,7 @@ export interface Column {
   name: string;
   /** 属性，如 X(9) */
   pic: string;
-  /** 在正文中的起始位置（从 1 开始，对应 TF-LINDA 的「相対位置」） */
+  /** 在正文中的起始位置（从 1 开始，即表头的「相対位置」） */
   start: number;
   /** 实际能从这条记录里取到的字节数 */
   len: number;
@@ -31,6 +32,11 @@ export interface Banner {
 export interface ColumnSet {
   columns: Column[];
   banner: Banner;
+}
+
+/** 解析提示的后缀（没有提示时为空） */
+function warnSuffixOf(warnings: string[]): string {
+  return warnings.length > 0 ? t('banner.warnSuffix', { list: warnings.join(t('warn.sep')) }) : '';
 }
 
 export type MismatchMode = 'lenient' | 'strict';
@@ -71,7 +77,7 @@ function column(
 }
 
 function bodyColumns(bodyLen: number): Column[] {
-  return [column('(正文)', `X(${bodyLen})`, 1, bodyLen, bodyLen, 'body', 'alnum', false)];
+  return [column(t('col.body'), `X(${bodyLen})`, 1, bodyLen, bodyLen, 'body', 'alnum', false)];
 }
 
 /**
@@ -85,12 +91,12 @@ export function buildColumns(
   loadError?: string
 ): ColumnSet {
   if (loadError) {
-    return { columns: bodyColumns(bodyLen), banner: { level: 'error', text: `长度 ${bodyLen}：${loadError}` } };
+    return { columns: bodyColumns(bodyLen), banner: { level: 'error', text: t('banner.loadError', { len: bodyLen, error: loadError }) } };
   }
   if (!ref) {
     return {
       columns: bodyColumns(bodyLen),
-      banner: { level: 'warn', text: `长度 ${bodyLen} 尚未指定 copybook，显示整条正文。` },
+      banner: { level: 'warn', text: t('banner.noCopybook', { len: bodyLen }) },
     };
   }
 
@@ -101,7 +107,7 @@ export function buildColumns(
       columns: bodyColumns(bodyLen),
       banner: {
         level: 'error',
-        text: `copybook「${ref.name}」中没有解析出任何字段，显示整条正文。${cb.warnings.length ? `（解析提示：${cb.warnings.join('；')}）` : ''}`,
+        text: t('banner.noFields', { name: ref.name, warn: warnSuffixOf(cb.warnings) }),
       },
     };
   }
@@ -109,22 +115,26 @@ export function buildColumns(
   // 多个 01 时说明选用了哪一个
   const recordNote =
     cb.records.length > 1
-      ? `含 ${cb.records.length} 个 01 定义（${cb.records.map((r) => `${r.name}=${r.totalLength}`).join('、')}），选用 ${record.name}。`
+      ? t('banner.records', {
+          n: cb.records.length,
+          list: cb.records.map((r) => `${r.name}=${r.totalLength}`).join(t('list.sep')),
+          name: record.name,
+        })
       : '';
 
   const copyLen = record.totalLength;
-  const warnSuffix = cb.warnings.length > 0 ? `（解析提示：${cb.warnings.join('；')}）` : '';
+  const warnSuffix = warnSuffixOf(cb.warnings);
 
   if (copyLen !== bodyLen && mode === 'strict') {
     const diff =
       copyLen > bodyLen
-        ? `copybook 比正文多 ${copyLen - bodyLen} 字节`
-        : `正文比 copybook 多 ${bodyLen - copyLen} 字节`;
+        ? t('banner.copyLonger', { n: copyLen - bodyLen })
+        : t('banner.bodyLonger', { n: bodyLen - copyLen });
     return {
       columns: bodyColumns(bodyLen),
       banner: {
         level: 'error',
-        text: `长度不一致：正文 ${bodyLen} 字节，copybook「${ref.name}」${copyLen} 字节（${diff}）。严格模式下不拆分字段。`,
+        text: t('banner.strict', { body: bodyLen, name: ref.name, copy: copyLen, diff }),
       },
     };
   }
@@ -145,19 +155,34 @@ export function buildColumns(
   if (copyLen === bodyLen) {
     banner = {
       level: cb.warnings.length > 0 ? 'warn' : 'info',
-      text: `copybook「${ref.name}」，总长 ${copyLen} 字节，${fields.length} 个字段，与正文长度一致。${recordNote}${warnSuffix}`,
+      text: t('banner.ok', { name: ref.name, copy: copyLen, fields: fields.length, records: recordNote, warn: warnSuffix }),
     };
   } else if (copyLen < bodyLen) {
     const extra = bodyLen - copyLen;
-    columns.push(column('(余り)', `X(${extra})`, copyLen + 1, extra, extra, 'extra', 'alnum', false));
+    columns.push(column(t('col.extra'), `X(${extra})`, copyLen + 1, extra, extra, 'extra', 'alnum', false));
     banner = {
       level: 'warn',
-      text: `长度不一致：正文 ${bodyLen} 字节，copybook「${ref.name}」${copyLen} 字节，多出的 ${extra} 字节显示在「(余り)」列。${recordNote}${warnSuffix}`,
+      text: t('banner.extra', {
+        body: bodyLen,
+        name: ref.name,
+        copy: copyLen,
+        extra,
+        col: t('col.extra'),
+        records: recordNote,
+        warn: warnSuffix,
+      }),
     };
   } else {
     banner = {
       level: 'warn',
-      text: `长度不一致：正文 ${bodyLen} 字节，copybook「${ref.name}」${copyLen} 字节，缺 ${copyLen - bodyLen} 字节；被截断的字段标橙，完全缺失的字段显示「—」。${recordNote}${warnSuffix}`,
+      text: t('banner.short', {
+        body: bodyLen,
+        name: ref.name,
+        copy: copyLen,
+        short: copyLen - bodyLen,
+        records: recordNote,
+        warn: warnSuffix,
+      }),
     };
   }
   return { columns, banner };

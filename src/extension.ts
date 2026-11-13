@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { RdwSession, Discriminator, Group } from './session';
+import { RdwSession, Discriminator, Group, discriminatorLabel } from './session';
+import { t, setLocale, uiStrings } from './i18n';
 import { parseCopybook, Copybook, selectRecord } from './copybook';
 import { MismatchMode } from './layout';
 
@@ -160,17 +161,17 @@ async function pickCopybook(length: number, store: MappingStore, value?: string)
     items.push({
       label: `${match ? '$(check) ' : ''}${path.basename(uri.fsPath)}`,
       description: vscode.workspace.asRelativePath(uri, false),
-      detail: total >= 0 ? `总长 ${total} 字节${match ? '，与记录长度一致' : ''}` : '无法解析',
+      detail: total >= 0 ? t(match ? 'ext.cpyDetailMatch' : 'ext.cpyDetail', { n: total }) : t('ext.cpyUnparsable'),
       uri,
       match,
     });
   }
   items.sort((a, b) => Number(b.match) - Number(a.match) || a.label.localeCompare(b.label));
-  items.push({ label: '$(folder-opened) 浏览其他文件…', browse: true, match: false });
+  items.push({ label: t('ext.browse'), browse: true, match: false });
 
   const picked = await vscode.window.showQuickPick(items, {
-    title: value === undefined ? `为长度 ${length} 的记录选择 copybook` : `为长度 ${length}、字段值 ${value} 的记录选择 copybook`,
-    placeHolder: '带 ✓ 的 copybook 总长度与记录长度一致',
+    title: value === undefined ? t('ext.pickTitle', { len: length }) : t('ext.pickTitleValue', { len: length, value }),
+    placeHolder: t('ext.pickPlaceholder'),
     matchOnDescription: true,
   });
   if (!picked) {
@@ -179,8 +180,8 @@ async function pickCopybook(length: number, store: MappingStore, value?: string)
   if (picked.browse) {
     const res = await vscode.window.showOpenDialog({
       canSelectMany: false,
-      title: `选择长度 ${length} 对应的 copybook`,
-      filters: { Copybook: ['cpy', 'cbl', 'cob', 'copy'], 全部文件: ['*'] },
+      title: t('ext.openDialogTitle', { len: length }),
+      filters: { Copybook: ['cpy', 'cbl', 'cob', 'copy'], [t('ext.allFiles')]: ['*'] },
     });
     return res?.[0];
   }
@@ -191,30 +192,46 @@ async function pickCopybook(length: number, store: MappingStore, value?: string)
 function describeLayout(session: RdwSession, g: Group): string {
   const length = g.length;
   if (!g.copybook) {
-    return `长度 ${length} 尚未指定 copybook。`;
+    return t('ext.layout.noCopybook', { len: length });
   }
   const cb = g.copybook.copybook;
   const lines: string[] = [];
-  lines.push(`copybook   : ${g.copybook.name}`);
-  lines.push(`记录长度   : ${length} 字节`);
+  lines.push(t('ext.layout.copybook', { name: g.copybook.name }));
+  lines.push(t('ext.layout.length', { len: length }));
   const disc = session.getDiscriminator(length);
   if (g.value !== undefined && disc) {
-    lines.push(`判别字段   : 位置 ${disc.start}~${disc.start + disc.length - 1}（${disc.type === 'comp3' ? 'COMP-3' : '文字'}） = ${g.value}`);
+    lines.push(t('ext.layout.disc', { label: discriminatorLabel(disc), value: g.value }));
   }
-  lines.push(`01 定义    : ${cb.records.map((r) => `${r.name}（${r.totalLength} 字节）`).join('、') || '（无）'}`);
+  lines.push(
+    t('ext.layout.records', {
+      list:
+        cb.records.map((r) => t('ext.layout.recordItem', { name: r.name, len: r.totalLength })).join(t('list.sep')) ||
+        t('ext.layout.none'),
+    })
+  );
   const rec = selectRecord(cb, length);
   if (rec) {
-    lines.push(`选用       : ${rec.name}，总长 ${rec.totalLength} 字节，${rec.fields.length} 个字段`);
+    lines.push(t('ext.layout.selected', { name: rec.name, len: rec.totalLength, n: rec.fields.length }));
     if (rec.totalLength !== length) {
-      lines.push(`差异       : ${rec.totalLength > length ? 'copybook 多' : 'copybook 少'} ${Math.abs(rec.totalLength - length)} 字节`);
+      lines.push(t(rec.totalLength > length ? 'ext.layout.diffMore' : 'ext.layout.diffLess', { n: Math.abs(rec.totalLength - length) }));
     }
   }
   if (cb.warnings.length) {
-    lines.push('', '解析提示:');
+    lines.push('', t('ext.layout.warnings'));
     cb.warnings.forEach((w) => lines.push(`  - ${w}`));
   }
   if (rec) {
-    lines.push('', ['No.'.padStart(5), '位置'.padStart(6), '长度'.padStart(6), '结束'.padStart(6), '  属性'.padEnd(26), '字段名'].join(' '));
+    lines.push(
+      '',
+      [
+        'No.'.padStart(5),
+        t('ext.layout.colPos').padStart(6),
+        t('ext.layout.colLen').padStart(6),
+        t('ext.layout.colEnd').padStart(6),
+        ('  ' + t('ext.layout.colPic')).padEnd(26),
+        t('ext.layout.colName'),
+      ].join(' ')
+    );
     rec.fields.forEach((f, i) => {
       lines.push(
         [
@@ -252,16 +269,16 @@ async function pickDiscriminator(session: RdwSession, g: Group): Promise<Discrim
       const type = f.usage === 'COMP-3' || f.usage === 'PACKED-DECIMAL' ? 'comp3' : 'text';
       items.push({
         label: f.name,
-        description: `位置 ${f.offset + 1} · ${f.length} 字节 · ${f.pic}`,
+        description: t('ext.disc.fieldDesc', { pos: f.offset + 1, len: f.length, pic: f.pic }),
         d: { start: f.offset + 1, length: f.length, type },
       });
     }
   }
-  items.push({ label: '$(edit) 手动输入位置和长度…', manual: true });
+  items.push({ label: t('ext.disc.manual'), manual: true });
 
   const pick = await vscode.window.showQuickPick(items, {
-    title: `长度 ${g.length}：选择用来区分 copybook 的字段`,
-    placeHolder: g.copybook ? `字段来自「${g.copybook.name}」` : '尚未指定 copybook，请手动输入位置和长度',
+    title: t('ext.disc.pickTitle', { len: g.length }),
+    placeHolder: g.copybook ? t('ext.disc.fieldsFrom', { name: g.copybook.name }) : t('ext.disc.noCopybook'),
     matchOnDescription: true,
   });
   if (!pick) {
@@ -270,26 +287,26 @@ async function pickDiscriminator(session: RdwSession, g: Group): Promise<Discrim
   let d = pick.d;
   if (pick.manual) {
     const num = (min: number, max: number) => (v: string) =>
-      /^\d+$/.test(v.trim()) && +v >= min && +v <= max ? undefined : `请输入 ${min}~${max} 的整数`;
+      /^\d+$/.test(v.trim()) && +v >= min && +v <= max ? undefined : t('ext.disc.intRange', { min, max });
     const start = await vscode.window.showInputBox({
-      title: '判别字段的起始位置',
-      prompt: `从 1 开始计数（记录正文共 ${g.length} 字节）`,
+      title: t('ext.disc.startTitle'),
+      prompt: t('ext.disc.startPrompt', { len: g.length }),
       value: '1',
       validateInput: num(1, g.length),
     });
     if (!start) return undefined;
     const len = await vscode.window.showInputBox({
-      title: '判别字段的长度（字节）',
+      title: t('ext.disc.lenTitle'),
       value: '1',
       validateInput: num(1, Math.min(16, g.length - +start + 1)),
     });
     if (!len) return undefined;
     const type = await vscode.window.showQuickPick(
       [
-        { label: '文字', description: '按字符比较，如 01、HD', t: 'text' as const },
-        { label: 'COMP-3', description: '按数值比较，如 11 80 0C → +11800', t: 'comp3' as const },
+        { label: t('disc.text'), description: t('ext.disc.typeTextDesc'), t: 'text' as const },
+        { label: 'COMP-3', description: t('ext.disc.typeComp3Desc'), t: 'comp3' as const },
       ],
-      { title: '判别字段的类型' }
+      { title: t('ext.disc.typeTitle') }
     );
     if (!type) return undefined;
     d = { start: +start, length: +len, type: type.t };
@@ -301,7 +318,7 @@ async function pickDiscriminator(session: RdwSession, g: Group): Promise<Discrim
   const values = session.discriminatorValues(g.length, d);
   if (values.length > MAX_DISC_VALUES) {
     vscode.window.showWarningMessage(
-      `该字段在长度 ${g.length} 的记录中有 ${values.length} 种不同的值，可能选错了字段，已取消。`
+      t('ext.disc.tooMany', { len: g.length, n: values.length })
     );
     return undefined;
   }
@@ -310,11 +327,11 @@ async function pickDiscriminator(session: RdwSession, g: Group): Promise<Discrim
   }
   const confirm = await vscode.window.showQuickPick<Confirm>(
     [
-      { label: `$(check) 按此字段区分为 ${values.length} 组`, ok: true },
-      { label: '各值的记录数', kind: vscode.QuickPickItemKind.Separator },
-      ...values.map((v) => ({ label: v.value, description: `${v.count} 条` })),
+      { label: t('ext.disc.confirm', { n: values.length }), ok: true },
+      { label: t('ext.disc.counts'), kind: vscode.QuickPickItemKind.Separator },
+      ...values.map((v) => ({ label: v.value, description: t('ext.disc.count', { n: v.count }) })),
     ],
-    { title: `位置 ${d.start}~${d.start + d.length - 1}（${d.type === 'comp3' ? 'COMP-3' : '文字'}）的取值` }
+    { title: t('ext.disc.valuesTitle', { label: discriminatorLabel(d) }) }
   );
   return confirm?.ok ? d : undefined;
 }
@@ -322,7 +339,7 @@ async function pickDiscriminator(session: RdwSession, g: Group): Promise<Discrim
 async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Promise<void> {
   let uri = target;
   if (!uri) {
-    const res = await vscode.window.showOpenDialog({ canSelectMany: false, title: '选择 RDW 记录文件' });
+    const res = await vscode.window.showOpenDialog({ canSelectMany: false, title: t('ext.selectRdwFile') });
     uri = res?.[0];
   }
   if (!uri) {
@@ -333,7 +350,7 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
   try {
     bytes = await vscode.workspace.fs.readFile(uri);
   } catch (e) {
-    vscode.window.showErrorMessage(`读取文件失败：${(e as Error).message}`);
+    vscode.window.showErrorMessage(t('ext.readFailed', { error: (e as Error).message }));
     return;
   }
 
@@ -362,7 +379,7 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
         g.value
       );
     } catch (e) {
-      session.setCopybook(g.length, null, `无法读取 copybook「${stored}」：${(e as Error).message}`, g.value);
+      session.setCopybook(g.length, null, t('ext.cpyReadFailed', { path: stored, error: (e as Error).message }), g.value);
     }
   };
 
@@ -408,6 +425,7 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
       gen,
       hiddenPattern: config().hiddenPattern,
       version: String(ctx.extension.packageJSON.version ?? ''),
+      strings: uiStrings(),
     });
   };
 
@@ -469,9 +487,9 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
         const g = session.groupByKey(msg.g);
         if (!g) break;
         const ok = await vscode.window.showWarningMessage(
-          `取消长度 ${g.length} 的「按字段值区分」？各字段值对应的 copybook 设置也会被清除。`,
+          t('ext.disc.clearConfirm', { len: g.length }),
           { modal: true },
-          '取消区分'
+          t('ext.disc.clearButton')
         );
         if (ok) {
           await store.setDiscriminator(g.length, null);
@@ -494,6 +512,7 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
 }
 
 export function activate(ctx: vscode.ExtensionContext): void {
+  setLocale(vscode.env.language);
   ctx.subscriptions.push(
     vscode.commands.registerCommand('rdwViewer.open', (uri?: vscode.Uri) => openViewer(ctx, uri))
   );

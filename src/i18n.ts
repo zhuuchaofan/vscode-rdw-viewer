@@ -1,0 +1,299 @@
+/**
+ * 界面文字的多语言支持（中文 / 日文）。
+ *
+ * 不依赖 VS Code：扩展激活时根据 vscode.env.language 调用 setLocale()；
+ * 以 "ui." 开头的键会随 init 消息发给 webview。
+ * 占位符写成 {name}，由 t() 替换。
+ */
+
+const zh = {
+  // ---- RDW 扫描 ----
+  'rdw.resynced': '{msg}；已跳过 {n} 字节，在偏移 {off} 重新找到记录边界',
+  'rdw.noResync': '{msg}；此后无法重新找到有效的记录边界，剩余 {n} 字节未解析',
+  'rdw.tailShort': '偏移 {off}：文件末尾仅剩 {remain} 字节，不足一条记录所需的最少 {min} 字节（前后 RDW），文件可能被截断',
+  'rdw.truncated':
+    '偏移 {off}：前置 RDW 声明正文 {len} 字节，需要 {need} 字节，但文件只剩 {remain} 字节（文件被截断，或前置 RDW 长度错误）',
+  'rdw.mismatch': '偏移 {off}：前置 RDW 长度={len}，后置 RDW（偏移 {endOff}）长度={trailing}，前后不一致',
+
+  // ---- copybook 解析 ----
+  'cpy.unknownStmt': '无法识别的语句已跳过：「{stmt}」',
+  'cpy.unknownPrefix': '语句开头的「{text}」无法识别，已跳过',
+  'cpy.occursDepending': '{name}: OCCURS DEPENDING ON 按最大次数展开',
+  'cpy.redefines': '{name}: REDEFINES {target} 已忽略（不占位置）',
+
+  // ---- 列布局 / 提示条 ----
+  'col.body': '(正文)',
+  'col.extra': '(余り)',
+  'banner.loadError': '长度 {len}：{error}',
+  'banner.noCopybook': '长度 {len} 尚未指定 copybook，显示整条正文。',
+  'banner.noFields': 'copybook「{name}」中没有解析出任何字段，显示整条正文。{warn}',
+  'banner.records': '含 {n} 个 01 定义（{list}），选用 {name}。',
+  'banner.warnSuffix': '（解析提示：{list}）',
+  'banner.copyLonger': 'copybook 比正文多 {n} 字节',
+  'banner.bodyLonger': '正文比 copybook 多 {n} 字节',
+  'banner.strict': '长度不一致：正文 {body} 字节，copybook「{name}」{copy} 字节（{diff}）。严格模式下不拆分字段。',
+  'banner.ok': 'copybook「{name}」，总长 {copy} 字节，{fields} 个字段，与正文长度一致。{records}{warn}',
+  'banner.extra': '长度不一致：正文 {body} 字节，copybook「{name}」{copy} 字节，多出的 {extra} 字节显示在「{col}」列。{records}{warn}',
+  'banner.short':
+    '长度不一致：正文 {body} 字节，copybook「{name}」{copy} 字节，缺 {short} 字节；被截断的字段标橙，完全缺失的字段显示「—」。{records}{warn}',
+  'list.sep': '、',
+  'warn.sep': '；',
+
+  // ---- 判别字段 ----
+  'disc.text': '文字',
+  'disc.label': '位置 {from}~{to}（{type}）',
+  'disc.outOfRange': '(超出记录长度)',
+  'disc.invalid': '(无效 {hex})',
+  'disc.blank': '(空白)',
+  'disc.bannerPrefix': '【{label} = {value}】',
+
+  // ---- 扩展端 ----
+  'ext.cpyDetailMatch': '总长 {n} 字节，与记录长度一致',
+  'ext.cpyDetail': '总长 {n} 字节',
+  'ext.cpyUnparsable': '无法解析',
+  'ext.browse': '$(folder-opened) 浏览其他文件…',
+  'ext.pickTitle': '为长度 {len} 的记录选择 copybook',
+  'ext.pickTitleValue': '为长度 {len}、字段值 {value} 的记录选择 copybook',
+  'ext.pickPlaceholder': '带 ✓ 的 copybook 总长度与记录长度一致',
+  'ext.openDialogTitle': '选择长度 {len} 对应的 copybook',
+  'ext.allFiles': '全部文件',
+  'ext.selectRdwFile': '选择 RDW 记录文件',
+  'ext.readFailed': '读取文件失败：{error}',
+  'ext.cpyReadFailed': '无法读取 copybook「{path}」：{error}',
+  'ext.layout.noCopybook': '长度 {len} 尚未指定 copybook。',
+  'ext.layout.copybook': 'copybook   : {name}',
+  'ext.layout.length': '记录长度   : {len} 字节',
+  'ext.layout.disc': '判别字段   : {label} = {value}',
+  'ext.layout.records': '01 定义    : {list}',
+  'ext.layout.recordItem': '{name}（{len} 字节）',
+  'ext.layout.none': '（无）',
+  'ext.layout.selected': '选用       : {name}，总长 {len} 字节，{n} 个字段',
+  'ext.layout.diffMore': '差异       : copybook 多 {n} 字节',
+  'ext.layout.diffLess': '差异       : copybook 少 {n} 字节',
+  'ext.layout.warnings': '解析提示:',
+  'ext.layout.colPos': '位置',
+  'ext.layout.colLen': '长度',
+  'ext.layout.colEnd': '结束',
+  'ext.layout.colPic': '属性',
+  'ext.layout.colName': '字段名',
+  'ext.disc.fieldDesc': '位置 {pos} · {len} 字节 · {pic}',
+  'ext.disc.manual': '$(edit) 手动输入位置和长度…',
+  'ext.disc.pickTitle': '长度 {len}：选择用来区分 copybook 的字段',
+  'ext.disc.fieldsFrom': '字段来自「{name}」',
+  'ext.disc.noCopybook': '尚未指定 copybook，请手动输入位置和长度',
+  'ext.disc.intRange': '请输入 {min}~{max} 的整数',
+  'ext.disc.startTitle': '判别字段的起始位置',
+  'ext.disc.startPrompt': '从 1 开始计数（记录正文共 {len} 字节）',
+  'ext.disc.lenTitle': '判别字段的长度（字节）',
+  'ext.disc.typeTitle': '判别字段的类型',
+  'ext.disc.typeTextDesc': '按字符比较，如 01、HD',
+  'ext.disc.typeComp3Desc': '按数值比较，如 10 10 0C → +10100',
+  'ext.disc.tooMany': '该字段在长度 {len} 的记录中有 {n} 种不同的值，可能选错了字段，已取消。',
+  'ext.disc.confirm': '$(check) 按此字段区分为 {n} 组',
+  'ext.disc.counts': '各值的记录数',
+  'ext.disc.count': '{n} 条',
+  'ext.disc.valuesTitle': '{label}的取值',
+  'ext.disc.clearConfirm': '取消长度 {len} 的「按字段值区分」？各字段值对应的 copybook 设置也会被清除。',
+  'ext.disc.clearButton': '取消区分',
+
+  // ---- webview ----
+  'ui.cellHint': '点击单元格查看字段值和原始字节',
+  'ui.records': '{n} 条记录',
+  'ui.errors': '{n} 处错误',
+  'ui.autoPacked': '自动识别 COMP-3',
+  'ui.autoPackedTitle': '没有 copybook 时，自动识别正文中的 COMP-3 并显示为 [数值]（启发式，可能误判）',
+  'ui.hideFiller': '隐藏 FILLER 列',
+  'ui.hideFillerTitle': '按字段名隐藏列（设置：rdwViewer.hiddenFieldPattern）',
+  'ui.encoding': '编码',
+  'ui.bytes': '{n} 字节',
+  'ui.noCopybook': '未指定copybook',
+  'ui.errorTab': '错误',
+  'ui.orderTab': '文件顺序',
+  'ui.orderTabTitle': '按文件原始顺序混排，copybook 切换处插入表头',
+  'ui.orderBanner': '文件顺序视图：共 {n} 组',
+  'ui.orderUnmapped': '，其中 {n} 组尚未指定 copybook（在对应标签页中选择）',
+  'ui.orderErrors': '，{n} 处错误',
+  'ui.period': '。',
+  'ui.errBanner': '共 {n} 处 RDW 错误。偏移为文件内的字节位置（十六进制）。',
+  'ui.choose': '选择 copybook…',
+  'ui.change': '更换 copybook…',
+  'ui.detail': '解析详情',
+  'ui.detailTitle': '在编辑器中列出每个字段的位置和长度',
+  'ui.clear': '清除',
+  'ui.disc': '按字段值区分…',
+  'ui.discTitle': '同一长度的记录按某个字段的值使用不同的 copybook',
+  'ui.undisc': '取消区分',
+  'ui.packedTitle': '自动识别的 COMP-3（可能误判）',
+  'ui.hdrName': '項目名',
+  'ui.hdrPic': '属 性',
+  'ui.hdrPos': '相 対 位 置',
+  'ui.offset': '偏移',
+  'ui.skipped': '跳过字节',
+  'ui.reason': '原因',
+  'ui.empty': '没有可显示的记录',
+  'ui.cellMeta': '{pic} · 位置 {pos} · {len} 字节',
+};
+
+export type MessageKey = keyof typeof zh;
+
+const ja: Record<MessageKey, string> = {
+  // ---- RDW 扫描 ----
+  'rdw.resynced': '{msg}。{n} バイトをスキップし、オフセット {off} でレコード境界を再検出しました',
+  'rdw.noResync': '{msg}。以降は有効なレコード境界が見つからず、残り {n} バイトは解析されていません',
+  'rdw.tailShort':
+    'オフセット {off}：ファイル末尾の残りが {remain} バイトしかなく、1 レコードに必要な最小 {min} バイト（前後の RDW）に足りません。ファイルが途中で切れている可能性があります',
+  'rdw.truncated':
+    'オフセット {off}：前 RDW のレコード長は {len} バイトで {need} バイト必要ですが、ファイルの残りは {remain} バイトです（ファイルが途中で切れているか、前 RDW の長さが不正です）',
+  'rdw.mismatch': 'オフセット {off}：前 RDW の長さ={len}、後 RDW（オフセット {endOff}）の長さ={trailing} で、前後が一致しません',
+
+  // ---- copybook 解析 ----
+  'cpy.unknownStmt': '解釈できない文をスキップしました：「{stmt}」',
+  'cpy.unknownPrefix': '文の先頭の「{text}」を解釈できないため、スキップしました',
+  'cpy.occursDepending': '{name}: OCCURS DEPENDING ON は最大回数で展開しました',
+  'cpy.redefines': '{name}: REDEFINES {target} は無視しました（領域を占有しません）',
+
+  // ---- 列布局 / 提示条 ----
+  'col.body': '(レコード全体)',
+  'col.extra': '(余り)',
+  'banner.loadError': 'レコード長 {len}：{error}',
+  'banner.noCopybook': 'レコード長 {len} の COPY句が未指定のため、レコード全体を表示しています。',
+  'banner.noFields': 'COPY句「{name}」から項目を解析できなかったため、レコード全体を表示しています。{warn}',
+  'banner.records': '01 レベルが {n} 個あります（{list}）。{name} を使用します。',
+  'banner.warnSuffix': '（解析メモ：{list}）',
+  'banner.copyLonger': 'COPY句がレコードより {n} バイト長い',
+  'banner.bodyLonger': 'レコードが COPY句より {n} バイト長い',
+  'banner.strict': '長さ不一致：レコード {body} バイト、COPY句「{name}」{copy} バイト（{diff}）。厳格モードのため項目に分割しません。',
+  'banner.ok': 'COPY句「{name}」：全長 {copy} バイト、{fields} 項目。レコード長と一致しています。{records}{warn}',
+  'banner.extra':
+    '長さ不一致：レコード {body} バイト、COPY句「{name}」{copy} バイト。超過した {extra} バイトは「{col}」列に表示しています。{records}{warn}',
+  'banner.short':
+    '長さ不一致：レコード {body} バイト、COPY句「{name}」{copy} バイトで {short} バイト不足しています。途中で切れた項目はオレンジ、まったく存在しない項目は「—」で表示しています。{records}{warn}',
+  'list.sep': '、',
+  'warn.sep': '／',
+
+  // ---- 判别字段 ----
+  'disc.text': '文字',
+  'disc.label': '位置 {from}~{to}（{type}）',
+  'disc.outOfRange': '(レコード長超過)',
+  'disc.invalid': '(不正 {hex})',
+  'disc.blank': '(空白)',
+  'disc.bannerPrefix': '【{label} = {value}】',
+
+  // ---- 扩展端 ----
+  'ext.cpyDetailMatch': '全長 {n} バイト（レコード長と一致）',
+  'ext.cpyDetail': '全長 {n} バイト',
+  'ext.cpyUnparsable': '解析できません',
+  'ext.browse': '$(folder-opened) 他のファイルを参照…',
+  'ext.pickTitle': 'レコード長 {len} の COPY句を選択',
+  'ext.pickTitleValue': 'レコード長 {len}・項目値 {value} の COPY句を選択',
+  'ext.pickPlaceholder': '✓ 付きは全長がレコード長と一致する COPY句です',
+  'ext.openDialogTitle': 'レコード長 {len} に対応する COPY句を選択',
+  'ext.allFiles': 'すべてのファイル',
+  'ext.selectRdwFile': 'RDW レコードファイルを選択',
+  'ext.readFailed': 'ファイルの読み込みに失敗しました：{error}',
+  'ext.cpyReadFailed': 'COPY句「{path}」を読み込めません：{error}',
+  'ext.layout.noCopybook': 'レコード長 {len} の COPY句は未指定です。',
+  'ext.layout.copybook': 'COPY句     : {name}',
+  'ext.layout.length': 'レコード長 : {len} バイト',
+  'ext.layout.disc': '判別項目   : {label} = {value}',
+  'ext.layout.records': '01 レベル  : {list}',
+  'ext.layout.recordItem': '{name}（{len} バイト）',
+  'ext.layout.none': '（なし）',
+  'ext.layout.selected': '使用       : {name}、全長 {len} バイト、{n} 項目',
+  'ext.layout.diffMore': '差異       : COPY句が {n} バイト長い',
+  'ext.layout.diffLess': '差異       : COPY句が {n} バイト短い',
+  'ext.layout.warnings': '解析メモ:',
+  'ext.layout.colPos': '位置',
+  'ext.layout.colLen': '長さ',
+  'ext.layout.colEnd': '終了',
+  'ext.layout.colPic': '属性',
+  'ext.layout.colName': '項目名',
+  'ext.disc.fieldDesc': '位置 {pos} · {len} バイト · {pic}',
+  'ext.disc.manual': '$(edit) 位置と長さを手入力…',
+  'ext.disc.pickTitle': 'レコード長 {len}：COPY句の切り替えに使う項目を選択',
+  'ext.disc.fieldsFrom': '項目は「{name}」から取得',
+  'ext.disc.noCopybook': 'COPY句が未指定です。位置と長さを手入力してください',
+  'ext.disc.intRange': '{min}~{max} の整数を入力してください',
+  'ext.disc.startTitle': '判別項目の開始位置',
+  'ext.disc.startPrompt': '1 から数えます（レコード本体は {len} バイト）',
+  'ext.disc.lenTitle': '判別項目の長さ（バイト）',
+  'ext.disc.typeTitle': '判別項目の型',
+  'ext.disc.typeTextDesc': '文字として比較（例：01、HD）',
+  'ext.disc.typeComp3Desc': '数値として比較（例：10 10 0C → +10100）',
+  'ext.disc.tooMany': 'この項目はレコード長 {len} のレコードで {n} 種類の値があります。項目の選択が誤っている可能性があるため、中止しました。',
+  'ext.disc.confirm': '$(check) この項目で {n} グループに分ける',
+  'ext.disc.counts': '値ごとのレコード件数',
+  'ext.disc.count': '{n} 件',
+  'ext.disc.valuesTitle': '{label} の値',
+  'ext.disc.clearConfirm': 'レコード長 {len} の「項目値で切り替え」を解除しますか？値ごとの COPY句の設定も削除されます。',
+  'ext.disc.clearButton': '解除',
+
+  // ---- webview ----
+  'ui.cellHint': 'セルをクリックすると項目値と元のバイトを表示します',
+  'ui.records': '{n} 件',
+  'ui.errors': 'エラー {n} 件',
+  'ui.autoPacked': 'COMP-3 を自動判別',
+  'ui.autoPackedTitle': 'COPY句がない場合、レコード中の COMP-3 を自動判別して [数値] で表示します（推定のため誤判定の可能性があります）',
+  'ui.hideFiller': 'FILLER 列を隠す',
+  'ui.hideFillerTitle': '項目名で列を隠します（設定：rdwViewer.hiddenFieldPattern）',
+  'ui.encoding': '文字コード',
+  'ui.bytes': '{n} バイト',
+  'ui.noCopybook': 'COPY句未指定',
+  'ui.errorTab': 'エラー',
+  'ui.orderTab': 'ファイル順',
+  'ui.orderTabTitle': 'ファイル上の順序で表示し、COPY句が切り替わる箇所に見出しを挿入します',
+  'ui.orderBanner': 'ファイル順ビュー：{n} グループ',
+  'ui.orderUnmapped': '、うち {n} グループは COPY句未指定（各タブで選択してください）',
+  'ui.orderErrors': '、エラー {n} 件',
+  'ui.period': '。',
+  'ui.errBanner': 'RDW エラーが {n} 件あります。オフセットはファイル内のバイト位置（16 進）です。',
+  'ui.choose': 'COPY句を選択…',
+  'ui.change': 'COPY句を変更…',
+  'ui.detail': '解析詳細',
+  'ui.detailTitle': '各項目の位置と長さをエディターに一覧表示します',
+  'ui.clear': 'クリア',
+  'ui.disc': '項目値で切り替え…',
+  'ui.discTitle': '同じレコード長でも、ある項目の値によって異なる COPY句を使います',
+  'ui.undisc': '切り替えを解除',
+  'ui.packedTitle': '自動判別した COMP-3（誤判定の可能性があります）',
+  'ui.hdrName': '項目名',
+  'ui.hdrPic': '属 性',
+  'ui.hdrPos': '相 対 位 置',
+  'ui.offset': 'オフセット',
+  'ui.skipped': 'スキップ',
+  'ui.reason': '原因',
+  'ui.empty': '表示するレコードがありません',
+  'ui.cellMeta': '{pic} · 位置 {pos} · {len} バイト',
+};
+
+let dict: Record<MessageKey, string> = zh;
+let current = 'zh';
+
+/** 根据 VS Code 的显示语言切换（ja* → 日文，其他 → 中文） */
+export function setLocale(lang: string | undefined): void {
+  const isJa = (lang ?? '').toLowerCase().startsWith('ja');
+  dict = isJa ? ja : zh;
+  current = isJa ? 'ja' : 'zh';
+}
+
+export function getLocale(): string {
+  return current;
+}
+
+export function t(key: MessageKey, args: Record<string, string | number> = {}): string {
+  return dict[key].replace(/\{(\w+)\}/g, (m, name: string) => (name in args ? String(args[name]) : m));
+}
+
+/** 发给 webview 的文字（ui.* 键，去掉前缀） */
+export function uiStrings(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(dict)) {
+    if (k.startsWith('ui.')) {
+      out[k.slice(3)] = v;
+    }
+  }
+  return out;
+}
+
+/** 供测试：两种语言的字典 */
+export const DICTS = { zh, ja };
