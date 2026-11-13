@@ -13,12 +13,10 @@
   const LEFT_W = 26; // ch：序号 8 + 偏移 14 + 状态 4
   const ERR_VIEW = 'ERR';
   const ORDER_VIEW = 'ORDER';
+  const C = window.RdwCommon;
   /** 界面文字（随 init 消息由扩展端按 VS Code 的显示语言发来） */
-  let strings = {};
-  function S(key, args) {
-    const text = strings[key] !== undefined ? strings[key] : key;
-    return text.replace(/\{(\w+)\}/g, (m, k) => (args && k in args ? String(args[k]) : m));
-  }
+  const S = C.S;
+  const esc = C.esc;
   const ERR_COLUMNS = [
     { name: 'offset', pic: '', start: 0, width: 12, kind: 'field', type: 'alnum' },
     { name: 'skipped', pic: '', start: 0, width: 10, kind: 'field', type: 'alnum' },
@@ -38,7 +36,13 @@
     cache: new Map(), // view -> Map(blockIndex -> rows[] | 'pending')
     selected: null, // {view,row,col}
     pending: new Set(),
+    /** 十六进制 dump 面板 */
+    dump: null, // 当前显示的 DumpInfo
   };
+  const saved = vscode.getState() || {};
+  state.showDump = saved.showDump !== false;
+  state.dumpH = saved.dumpH || 180;
+  const saveState = () => vscode.setState({ showDump: state.showDump, dumpH: state.dumpH });
 
   /* ---------- DOM ---------- */
   const app = document.getElementById('app');
@@ -49,6 +53,8 @@
     '<div id="layouts"></div>',
     '<div id="cellbar"></div>',
     '<div id="scroller"><div id="inner"><div id="hdr"></div><div id="rows"></div></div></div>',
+    '<div id="split" class="split"></div>',
+    '<div id="dump" class="dump"></div>',
   ].join('');
   const $toolbar = document.getElementById('toolbar');
   const $tabs = document.getElementById('tabs');
@@ -59,9 +65,8 @@
   const $inner = document.getElementById('inner');
   const $hdr = document.getElementById('hdr');
   const $rows = document.getElementById('rows');
-
-  const esc = (s) =>
-    String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const $split = document.getElementById('split');
+  const $dump = document.getElementById('dump');
 
   /* ---------- 列定义 ---------- */
   let hideRegex = null;
@@ -70,23 +75,9 @@
     return state.init.groups.find((g) => g.key === key);
   }
 
-  /* 列宽以 px 为单位：宽度取「host 按字节数估算的 ch 宽」和「表头文字在实际字体下的测量宽度」中较大者，
-   * 这样全角表头（レコードID 等）不会因字体回退而被截断或与数据列错位。 */
-  const measureCtx = document.createElement('canvas').getContext('2d');
-  let chPx = 8;
-  function refreshMetrics() {
-    const cs = getComputedStyle($scroller);
-    measureCtx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-    chPx = measureCtx.measureText('0').width || 8;
-  }
-  function textPx(s) {
-    return measureCtx.measureText(String(s)).width;
-  }
-  function colPx(col) {
-    const header = Math.max(textPx(col.name) * 1.05, textPx(col.pic) , textPx(col.start || '')) + 14;
-    return Math.ceil(Math.max(col.width * chPx, header));
-  }
-  const isNumeric = (col) => col.type === 'num' || col.type === 'bin';
+  const colPx = C.colPx;
+  const isNumeric = C.isNumeric;
+
 
   /** 返回某个分组/错误视图的可见列信息：[{i, col, px}]、总宽度(px) */
   const colCache = new Map();
@@ -153,6 +144,8 @@
       `</span><span class="spacer"></span>` +
       `<label title="${esc(S('autoPackedTitle'))}"><input type="checkbox" id="autoPacked" ${d.autoPacked ? 'checked' : ''}>${esc(S('autoPacked'))}</label>` +
       `<label title="${esc(S('hideFillerTitle'))}"><input type="checkbox" id="hideFiller" ${state.hideFiller ? 'checked' : ''}>${esc(S('hideFiller'))}</label>` +
+      `<label title="${esc(S('dumpToggleTitle'))}"><input type="checkbox" id="showDump" ${state.showDump ? 'checked' : ''}>${esc(S('dumpToggle'))}</label>` +
+      `<button id="compare" title="${esc(S('compareTitle'))}">${esc(S('compare'))}</button>` +
       `<button id="exportAll" title="${esc(S('exportAllTitle'))}">${esc(S('exportAll'))}</button>` +
       `<label>${esc(S('encoding'))} <select id="enc">${d.encodings
         .map((e) => `<option value="${e}" ${e === d.encoding ? 'selected' : ''}>${e}</option>`)
@@ -162,6 +155,13 @@
       resetView(true);
     };
     document.getElementById('exportAll').onclick = () => vscode.postMessage({ type: 'exportAll' });
+    document.getElementById('compare').onclick = () => vscode.postMessage({ type: 'compare' });
+    document.getElementById('showDump').onchange = (ev) => {
+      state.showDump = ev.target.checked;
+      saveState();
+      renderDump();
+      if (state.showDump && state.selected && state.selEntry !== undefined) requestDump(state.selEntry);
+    };
     document.getElementById('autoPacked').onchange = (ev) => {
       vscode.postMessage({ type: 'setAutoPacked', on: ev.target.checked });
     };
@@ -174,7 +174,8 @@
     const d = state.init;
     const parts = d.groups.map((g) => {
       const cb = g.copybookName
-        ? `<span class="cb" title="${esc(g.copybookName)}">✔ ${esc(g.copybookName)}</span>`
+        ? `<span class="cb" title="${esc(g.copybookName)}">✔ ${esc(g.copybookName)}</span>` +
+          (g.auto ? ` <span class="auto" title="${esc(S('autoTagTitle'))}">${esc(S('autoTag'))}</span>` : '')
         : `<span class="nocb">${esc(S('noCopybook'))}</span>`;
       const val = g.value !== null ? ` <span class="dv" title="${esc(g.discLabel || '')}">= ${esc(g.value)}</span>` : '';
       return `<button class="tab ${state.view === g.key ? 'active' : ''}" data-v="${esc(g.key)}"><span class="gdot${groupColor(g.key)}"></span>${esc(S('bytes', { n: g.length }))}${val} <small>× ${g.count}</small>${cb}</button>`;
@@ -193,7 +194,9 @@
         if (state.view !== b.dataset.v) {
           state.view = b.dataset.v;
           state.selected = null;
+          state.dump = null;
           clearCellbar();
+          renderDump();
           resetView(false);
         }
       };
@@ -289,29 +292,8 @@
     $cellbar.innerHTML = `<span class="hint">${esc(S('cellHint'))}</span>`;
   }
 
-  /**
-   * 把 data-top / data-w 应用为实际样式。
-   * Webview 的 CSP 可能禁止行内 style 属性，所以不在 HTML 里写 style="..."，而是通过 CSSOM 设置。
-   */
   function applyLayout(root) {
-    const vw = viewWidth();
-    root.querySelectorAll('.row').forEach((r) => {
-      if (r.dataset.top !== undefined) r.style.top = r.dataset.top + 'px';
-      r.style.width = vw;
-    });
-    root.querySelectorAll('[data-w]').forEach((c) => {
-      c.style.width = c.dataset.w + 'px';
-    });
-  }
-
-  /* 自动识别 COMP-3 的片段标记：\uE000数值\uE001、\uE002十六进制\uE003 */
-  function plainSeg(s) {
-    return String(s).replace(/\uE000/g, '[').replace(/\uE001/g, ']').replace(/\uE002/g, '‹').replace(/\uE003/g, '›');
-  }
-  function segHtml(s) {
-    return esc(s)
-      .replace(/\uE000([^\uE001]*)\uE001/g, `<span class="pk" title="${esc(S('packedTitle'))}">[$1]</span>`)
-      .replace(/\uE002([^\uE003]*)\uE003/g, '<span class="raw">‹$1›</span>');
+    C.applyLayout(root, viewWidth());
   }
 
   /* ---------- 表头 ---------- */
@@ -322,28 +304,9 @@
     const i = state.init ? state.init.groups.findIndex((g) => g.key === key) : -1;
     return i < 0 ? '' : ` gc${i % GROUP_COLORS}`;
   }
-  const FILLER_RE = /^FILLER(\(|$)/i;
-
-  /**
-   * 文字的显示：末尾补位的空格显示为淡色的 ·（全角空格为 □），控制字符图形（␀ 等）着色。
-   * 中间的空格（如「山田　太郎」）是数据本身的一部分，不做标记。
-   */
-  function textHtml(s) {
-    const m = /[ \u3000]+$/.exec(s);
-    const head = m ? s.slice(0, m.index) : s;
-    let html = esc(head).replace(/[\u2400-\u241f\u2421]/g, (c) => `<span class="cc">${c}</span>`);
-    if (m) {
-      html += `<span class="ws">${m[0].replace(/ /g, '·').replace(/\u3000/g, '□')}</span>`;
-    }
-    return html;
-  }
-
-  /** 单元格内容：自动识别的正文 / 文字（标出空白）/ 解码后的数值 */
-  function cellHtml(text, col) {
-    if (col.kind === 'body') return segHtml(text);
-    if (col.type === 'bin' || col.kind === 'missing') return esc(text);
-    return textHtml(text);
-  }
+  const FILLER_RE = C.FILLER_RE;
+  const cellHtml = C.cellHtml;
+  const plainSeg = C.plainSeg;
 
   function headerRowHtml(key, k, isAbs, top) {
     const { vis } = visibleCols(key);
@@ -351,13 +314,7 @@
     const gc = state.view === ORDER_VIEW ? groupColor(key) : '';
     let html = `<div class="row hdrrow k${k}${gc}" ${isAbs ? `data-top="${top}"` : ''}>`;
     html += `<div class="c l lh hd">${label}</div>`;
-    for (const { col, px } of vis) {
-      const cls = (k === 0 ? '' : k === 1 ? ' pic' : ' pos') + (isNumeric(col) ? ' num' : '');
-      const text = k === 0 ? col.name : k === 1 ? col.pic : col.start || '';
-      const dim = FILLER_RE.test(col.name) || col.kind === 'extra' ? ' dim' : '';
-      html += `<div class="c hd${cls}${dim} ${col.kind}" data-w="${px}" title="${esc(text)}">${esc(text)}</div>`;
-    }
-    return html + '</div>';
+    return html + C.headerCells(vis, k) + '</div>';
   }
 
   function renderStaticHeader() {
@@ -481,8 +438,41 @@
     }
   }
 
+  /* ---------- 十六进制 dump ---------- */
+  function requestDump(entry) {
+    if (state.showDump) vscode.postMessage({ type: 'dump', e: entry });
+  }
+
+  function renderDump() {
+    $split.style.display = state.showDump ? '' : 'none';
+    $dump.style.display = state.showDump ? '' : 'none';
+    if (!state.showDump) return;
+    const d = state.dump;
+    const selCol = d && state.selected && state.selEntry === d.entry ? state.selected.col : undefined;
+    $dump.innerHTML = C.dumpHtml(d, { selCol, empty: S('dumpEmptyHint') });
+    C.applyLayout($dump);
+  }
+
+  /** dump 中点击了某个字段的字节：选中表格中同一条记录的对应单元格 */
+  function pickColumn(col) {
+    const sel = state.selected;
+    if (!sel || !state.dump || state.dump.groupKey === null) return;
+    state.selected = { view: sel.view, row: sel.row, col };
+    vscode.postMessage({ type: 'cellInfo', g: state.dump.groupKey, e: state.dump.entry, col });
+    draw();
+    renderDump();
+    const el = $rows.querySelector('.c.f.sel');
+    if (el) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
+  C.splitter($split, $dump, state.dumpH, (h) => {
+    state.dumpH = h;
+    saveState();
+  });
+  C.bindDump($dump, () => state.dump, pickColumn);
+
   /* ---------- 事件 ---------- */
-  refreshMetrics();
+  C.refreshMetrics($scroller);
   $scroller.addEventListener('scroll', scheduleDraw, { passive: true });
   window.addEventListener('resize', scheduleDraw);
 
@@ -498,6 +488,10 @@
     const row = block[rowIdx - b * BLOCK];
     if (!row || row.t === 'hdr') return;
     state.selected = { view, row: rowIdx, col: colIdx };
+    const sameEntry = state.dump && state.selEntry === row.e;
+    state.selEntry = row.e;
+    if (sameEntry) renderDump();
+    else requestDump(row.e);
     if (row.t === 'err') {
       $cellbar.innerHTML = `<span class="name">${esc(ERR_COLUMNS[colIdx].name)}</span><span class="value">${esc(row.c[colIdx])}</span>`;
     } else {
@@ -510,24 +504,22 @@
     const msg = ev.data;
     switch (msg.type) {
       case 'init': {
-        refreshMetrics();
-        strings = msg.strings || {};
+        C.refreshMetrics($scroller);
+        C.setStrings(msg.strings);
         localizeErrColumns();
         state.init = msg;
         state.gen = msg.gen;
         state.cache.clear();
         state.selected = null;
-        try {
-          hideRegex = msg.hiddenPattern ? new RegExp(msg.hiddenPattern, 'i') : null;
-        } catch (e) {
-          hideRegex = null;
-        }
+        hideRegex = C.compileHide(msg.hiddenPattern);
         const keys = msg.groups.map((g) => g.key).concat([ERR_VIEW, ORDER_VIEW]);
         const keep = state.view && keys.includes(state.view);
         if (!keep) {
           state.view = msg.groups.length ? msg.groups[0].key : msg.errorCount ? ERR_VIEW : ORDER_VIEW;
         }
         clearCellbar();
+        state.dump = null;
+        renderDump();
         renderToolbar();
         resetView(keep);
         break;
@@ -537,6 +529,12 @@
         const m = cacheFor(msg.view);
         m.set(msg.start / BLOCK, msg.rows);
         if (msg.view === state.view) scheduleDraw();
+        break;
+      }
+      case 'dump': {
+        if (!state.selected || msg.info === null || msg.info.entry !== state.selEntry) return;
+        state.dump = msg.info;
+        renderDump();
         break;
       }
       case 'cell': {

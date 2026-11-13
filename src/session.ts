@@ -7,7 +7,7 @@ import { RdwIndex, scanRdw, RDW_SIZE } from './rdw';
 import { Copybook } from './copybook';
 import { Banner, Column, LayoutChoice, MismatchMode, buildColumns, displayWidth } from './layout';
 import { LayoutSelection } from './copybook';
-import { SUPPORTED_ENCODINGS, createDecoder, sanitize, toHex } from './decode';
+import { SUPPORTED_ENCODINGS, createDecoder, dumpChars, sanitize, toHex } from './decode';
 import { decodePacked, decodeNumeric, decodeZoned, NumericOptions } from './numeric';
 import { segmentBody, formatSegments, plainSegments } from './autodetect';
 
@@ -34,6 +34,8 @@ export interface Group {
   entries: Uint32Array;
   copybook: { name: string; copybook: Copybook } | null;
   loadError?: string;
+  /** copybook 未保存设置、按长度自动选择的 */
+  auto: boolean;
   columns: Column[];
   banner: Banner;
   /** REDEFINES / 01 记录的布局选择 */
@@ -49,6 +51,8 @@ export interface GroupInfo {
   discLabel: string | null;
   count: number;
   copybookName: string | null;
+  /** copybook 是按长度自动选择的 */
+  auto: boolean;
   banner: Banner;
   columns: Column[];
   choices: LayoutChoice[];
@@ -106,6 +110,38 @@ export interface CellInfo {
   warn: boolean;
 }
 
+/** 十六进制 dump 中的字段范围 */
+export interface DumpField {
+  name: string;
+  /** 从 1 开始的位置 */
+  start: number;
+  len: number;
+  /** 对应的列下标 */
+  col: number;
+}
+
+/** 一条记录（或错误条目跳过的字节）的十六进制 dump */
+export interface DumpInfo {
+  entry: number;
+  /** 文件内偏移：正常记录为前置 RDW 的位置，错误条目为出错位置 */
+  offset: number;
+  groupKey: string | null;
+  /** 错误条目的原因；正常记录为 null */
+  error: string | null;
+  /** 前置 / 后置 RDW 的十六进制（错误条目为 null） */
+  front: string | null;
+  back: string | null;
+  bytes: number[];
+  /** 文字栏：多字节字符在首字节位置，后续字节为空字符串 */
+  chars: string[];
+  fields: DumpField[];
+  /** 错误条目的字节过多时只取开头部分 */
+  truncated: boolean;
+}
+
+/** 错误条目的 dump 最多显示的字节数 */
+export const DUMP_ERROR_LIMIT = 4096;
+
 export const ERR_VIEW = 'ERR';
 export const ORDER_VIEW = 'ORDER';
 
@@ -117,7 +153,7 @@ export class RdwSession {
   /** 长度 → 判别字段 */
   private discriminators = new Map<number, Discriminator>();
   /** 分组键 → 已指定的 copybook（重新分组后保留） */
-  private assigned = new Map<string, { ref: CopybookRef | null; loadError?: string }>();
+  private assigned = new Map<string, { ref: CopybookRef | null; loadError?: string; auto?: boolean }>();
   /** 分组键 → 布局选择（重新分组后保留） */
   private selections = new Map<string, LayoutSelection>();
   private errorEntries: Uint32Array = new Uint32Array(0);
@@ -211,6 +247,7 @@ export class RdwSession {
         entries: Uint32Array.from(slot.list),
         copybook: a?.ref ?? null,
         loadError: a?.loadError,
+        auto: !!a?.auto,
         columns: [],
         banner: { level: 'warn', text: '' },
         layoutSel: this.selections.get(key) ?? {},
@@ -252,6 +289,9 @@ export class RdwSession {
     g.banner = set.banner;
     g.choices = set.choices;
     const d = this.discriminators.get(g.length);
+    if (g.auto && g.copybook) {
+      g.banner = { ...g.banner, text: t('banner.autoPrefix', { name: g.copybook.name }) + g.banner.text };
+    }
     if (g.value !== undefined && d) {
       g.banner = { ...g.banner, text: t('disc.bannerPrefix', { label: discriminatorLabel(d), value: g.value }) + g.banner.text };
     }
@@ -293,16 +333,18 @@ export class RdwSession {
   /**
    * 为某个分组指定 copybook。value 为判别字段的值；未按字段值区分时省略。
    * 指定结果按分组键记住，重新分组后仍然有效。
+   * auto=true 表示没有保存的设置、按长度自动选择（提示条中注明）。
    */
-  setCopybook(length: number, ref: CopybookRef | null, loadError?: string, value?: string): void {
+  setCopybook(length: number, ref: CopybookRef | null, loadError?: string, value?: string, auto = false): void {
     const key = RdwSession.groupKey(length, value);
-    this.assigned.set(key, { ref, loadError });
+    this.assigned.set(key, { ref, loadError, auto });
     const g = this.groupByKey(key);
     if (!g) {
       return;
     }
     g.copybook = ref;
     g.loadError = loadError;
+    g.auto = auto && !!ref;
     this.refreshGroup(g);
   }
 
@@ -413,6 +455,7 @@ export class RdwSession {
         discLabel: g.value !== undefined && this.discriminators.has(g.length) ? discriminatorLabel(this.discriminators.get(g.length)!) : null,
         count: g.entries.length,
         copybookName: g.copybook ? g.copybook.name : null,
+        auto: g.auto,
         banner: g.banner,
         columns: g.columns,
         choices: g.choices,
@@ -420,12 +463,14 @@ export class RdwSession {
     };
   }
 
-  private slice(entry: number, col: Column): Uint8Array {
+  /** 某条记录中某一列的字节 */
+  slice(entry: number, col: Column): Uint8Array {
     const base = this.index.offsets[entry] + RDW_SIZE + (col.start - 1);
     return this.buf.subarray(base, base + col.len);
   }
 
-  private cell(entry: number, col: Column): { text: string; warn: boolean } {
+  /** 单元格的显示文字和是否标橙 */
+  cell(entry: number, col: Column): { text: string; warn: boolean } {
     if (col.kind === 'missing') {
       return { text: '—', warn: true };
     }
@@ -479,7 +524,8 @@ export class RdwSession {
     };
   }
 
-  private entryRow(entry: number): Row {
+  /** 某个条目的行数据（正常记录或错误条目） */
+  entryRow(entry: number): Row {
     if (this.index.isError[entry]) {
       return this.errRow(entry);
     }
@@ -540,6 +586,74 @@ export class RdwSession {
       text: plainSegments(r.text),
       hex: toHex(this.slice(entry, col)),
       warn: r.warn,
+    };
+  }
+
+  /** 条目所属的分组（错误条目为 undefined） */
+  groupOfEntry(entry: number): Group | undefined {
+    const gi = this.entryGroup[entry];
+    return gi >= 0 ? this.groups[gi] : undefined;
+  }
+
+  /** 记录正文 */
+  body(entry: number): Uint8Array {
+    const base = this.index.offsets[entry] + RDW_SIZE;
+    return this.buf.subarray(base, base + this.index.lengths[entry]);
+  }
+
+  /** 正常记录（非错误条目）的条目序号，按文件顺序 */
+  recordEntries(): number[] {
+    const out: number[] = [];
+    for (let e = 0; e < this.index.count; e++) {
+      if (!this.index.isError[e]) {
+        out.push(e);
+      }
+    }
+    return out;
+  }
+
+  /** 十六进制 dump：正常记录为正文（另附前后 RDW），错误条目为跳过的字节 */
+  recordDump(entry: number): DumpInfo | undefined {
+    if (entry < 0 || entry >= this.index.count) {
+      return undefined;
+    }
+    const offset = this.index.offsets[entry];
+    if (this.index.isError[entry]) {
+      const len = Math.min(this.index.lengths[entry], DUMP_ERROR_LIMIT);
+      const bytes = this.buf.subarray(offset, offset + len);
+      return {
+        entry,
+        offset,
+        groupKey: null,
+        error: this.index.errors.get(entry) ?? '',
+        front: null,
+        back: null,
+        bytes: Array.from(bytes),
+        chars: dumpChars(bytes, this.decoder),
+        fields: [],
+        truncated: this.index.lengths[entry] > len,
+      };
+    }
+    const g = this.groupOfEntry(entry)!;
+    const body = this.body(entry);
+    const end = offset + RDW_SIZE + body.length;
+    const fields: DumpField[] = [];
+    g.columns.forEach((c, i) => {
+      if (c.kind !== 'missing' && c.len > 0) {
+        fields.push({ name: c.name, start: c.start, len: c.len, col: i });
+      }
+    });
+    return {
+      entry,
+      offset,
+      groupKey: g.key,
+      error: null,
+      front: toHex(this.buf.subarray(offset, offset + RDW_SIZE)),
+      back: toHex(this.buf.subarray(end, end + RDW_SIZE)),
+      bytes: Array.from(body),
+      chars: dumpChars(body, this.decoder),
+      fields,
+      truncated: false,
     };
   }
 }
