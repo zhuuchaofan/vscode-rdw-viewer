@@ -10,7 +10,8 @@
 
   const ROW_H = 20;
   const BLOCK = 64;
-  const LEFT_W = 26; // ch：序号 8 + 偏移 14 + 状态 4
+  /** 左侧固定列的宽度（ch）：序号 8 + 偏移 14（可隐藏）+ 状态 3 */
+  const leftW = () => (state.showOffset ? 25 : 11);
   const ERR_VIEW = 'ERR';
   const ORDER_VIEW = 'ORDER';
   const C = window.RdwCommon;
@@ -42,7 +43,8 @@
   const saved = vscode.getState() || {};
   state.showDump = saved.showDump !== false;
   state.dumpH = saved.dumpH || 180;
-  const saveState = () => vscode.setState({ showDump: state.showDump, dumpH: state.dumpH });
+  state.showOffset = saved.showOffset === true;
+  const saveState = () => vscode.setState({ showDump: state.showDump, dumpH: state.dumpH, showOffset: state.showOffset });
 
   /* ---------- DOM ---------- */
   const app = document.getElementById('app');
@@ -51,8 +53,8 @@
     '<div id="tabs"></div>',
     '<div id="banner"></div>',
     '<div id="layouts"></div>',
-    '<div id="cellbar"></div>',
     '<div id="scroller"><div id="inner"><div id="hdr"></div><div id="rows"></div></div></div>',
+    '<div id="cellbar"></div>',
     '<div id="split" class="split"></div>',
     '<div id="dump" class="dump"></div>',
   ].join('');
@@ -67,6 +69,10 @@
   const $rows = document.getElementById('rows');
   const $split = document.getElementById('split');
   const $dump = document.getElementById('dump');
+  /** 提示条「⋯」按钮的下拉菜单 */
+  const $menu = document.createElement('div');
+  $menu.id = 'menu';
+  document.body.appendChild($menu);
 
   /* ---------- 列定义 ---------- */
   let hideRegex = null;
@@ -127,9 +133,9 @@
       // 只有存在错误行时，才需要容纳错误行的宽度
       let w = d.errorCount ? visibleCols(ERR_VIEW).total : 0;
       d.groups.forEach((g) => (w = Math.max(w, visibleCols(g.key).total)));
-      return `calc(${LEFT_W}ch + ${w}px)`;
+      return `calc(${leftW()}ch + ${w}px)`;
     }
-    return `calc(${LEFT_W}ch + ${visibleCols(state.view).total}px)`;
+    return `calc(${leftW()}ch + ${visibleCols(state.view).total}px)`;
   }
 
   /* ---------- 渲染：工具栏 / 标签页 / 提示条 ---------- */
@@ -144,6 +150,7 @@
       `</span><span class="spacer"></span>` +
       `<label title="${esc(S('autoPackedTitle'))}"><input type="checkbox" id="autoPacked" ${d.autoPacked ? 'checked' : ''}>${esc(S('autoPacked'))}</label>` +
       `<label title="${esc(S('hideFillerTitle'))}"><input type="checkbox" id="hideFiller" ${state.hideFiller ? 'checked' : ''}>${esc(S('hideFiller'))}</label>` +
+      `<label title="${esc(S('offsetToggleTitle'))}"><input type="checkbox" id="showOffset" ${state.showOffset ? 'checked' : ''}>${esc(S('offset'))}</label>` +
       `<label title="${esc(S('dumpToggleTitle'))}"><input type="checkbox" id="showDump" ${state.showDump ? 'checked' : ''}>${esc(S('dumpToggle'))}</label>` +
       `<button id="compare" title="${esc(S('compareTitle'))}">${esc(S('compare'))}</button>` +
       `<button id="exportAll" title="${esc(S('exportAllTitle'))}">${esc(S('exportAll'))}</button>` +
@@ -155,6 +162,11 @@
       resetView(true);
     };
     document.getElementById('exportAll').onclick = () => vscode.postMessage({ type: 'exportAll' });
+    document.getElementById('showOffset').onchange = (ev) => {
+      state.showOffset = ev.target.checked;
+      saveState();
+      resetView(true);
+    };
     document.getElementById('compare').onclick = () => vscode.postMessage({ type: 'compare' });
     document.getElementById('showDump').onchange = (ev) => {
       state.showDump = ev.target.checked;
@@ -208,8 +220,11 @@
     let level = 'info';
     let text = '';
     let buttons = '';
+    /** 「⋯」菜单中的操作 */
+    const more = [];
+    const g = groupOf(state.view);
     if (state.view === ORDER_VIEW) {
-      const unmapped = d.groups.filter((g) => !g.copybookName).length;
+      const unmapped = d.groups.filter((x) => !x.copybookName).length;
       level = unmapped || d.errorCount ? 'warn' : 'info';
       text =
         S('orderBanner', { n: d.groups.length }) +
@@ -221,43 +236,65 @@
       text = S('errBanner', { n: d.errorCount });
       buttons = `<button data-act="export" title="${esc(S('exportTitle'))}">${esc(S('export'))}</button>`;
     } else {
-      const g = groupOf(state.view);
       level = g.banner.level;
       text = g.banner.text;
-      buttons = `<button class="primary" data-act="choose">${esc(S(g.copybookName ? 'change' : 'choose'))}</button>`;
-      if (g.copybookName) {
-        buttons += `<button data-act="detail" title="${esc(S('detailTitle'))}">${esc(S('detail'))}</button>`;
-      }
-      if (g.copybookName || g.banner.level === 'error') {
-        buttons += `<button data-act="clear">${esc(S('clear'))}</button>`;
-      }
+      // COPY句未指定のときだけ主ボタン
+      buttons = `<button class="${g.copybookName ? '' : 'primary'}" data-act="choose">${esc(S(g.copybookName ? 'change' : 'choose'))}</button>`;
       buttons += `<button data-act="export" title="${esc(S('exportTitle'))}">${esc(S('export'))}</button>`;
-      buttons +=
-        g.value === null
-          ? `<button data-act="disc" title="${esc(S('discTitle'))}">${esc(S('disc'))}</button>`
-          : `<button data-act="undisc">${esc(S('undisc'))}</button>`;
+      if (g.copybookName) more.push({ act: 'detail', label: S('detail'), title: S('detailTitle') });
+      if (g.copybookName || g.banner.level === 'error') more.push({ act: 'clear', label: S('clear') });
+      more.push(g.value === null ? { act: 'disc', label: S('disc'), title: S('discTitle') } : { act: 'undisc', label: S('undisc') });
+      buttons += `<button class="icon" data-act="more" title="${esc(S('moreTitle'))}">⋯</button>`;
     }
+    const icon = { info: 'ℹ', warn: '⚠', error: '✖' }[level];
     $banner.className = level;
-    $banner.innerHTML = `<span class="text">${esc(text)}</span>${buttons}`;
-    const g = groupOf(state.view);
+    $banner.innerHTML = `<span class="ico">${icon}</span><span class="text" title="${esc(text)}">${esc(text)}</span>${buttons}`;
+    const run = (act) => {
+      if (act === 'export') {
+        vscode.postMessage({ type: 'exportView', view: state.view });
+        return;
+      }
+      if (!g) return;
+      const type = {
+        choose: 'chooseCopybook',
+        clear: 'clearCopybook',
+        detail: 'showLayout',
+        disc: 'configureDisc',
+        undisc: 'clearDisc',
+      }[act];
+      vscode.postMessage({ type, g: g.key });
+    };
     $banner.querySelectorAll('button').forEach((b) => {
-      b.onclick = () => {
-        if (b.dataset.act === 'export') {
-          vscode.postMessage({ type: 'exportView', view: state.view });
-          return;
-        }
-        if (!g) return;
-        const type = {
-          choose: 'chooseCopybook',
-          clear: 'clearCopybook',
-          detail: 'showLayout',
-          disc: 'configureDisc',
-          undisc: 'clearDisc',
-        }[b.dataset.act];
-        vscode.postMessage({ type, g: g.key });
-      };
+      b.onclick = () => (b.dataset.act === 'more' ? openMenu(b, more, run) : run(b.dataset.act));
     });
   }
+
+  function closeMenu() {
+    $menu.style.display = 'none';
+  }
+  function openMenu(anchor, items, run) {
+    if ($menu.style.display === 'block') {
+      closeMenu();
+      return;
+    }
+    $menu.innerHTML = items
+      .map((it, i) => `<div class="mi" data-i="${i}" title="${esc(it.title || '')}">${esc(it.label)}</div>`)
+      .join('');
+    $menu.style.display = 'block';
+    const r = anchor.getBoundingClientRect();
+    $menu.style.top = r.bottom + 2 + 'px';
+    $menu.style.right = Math.max(4, window.innerWidth - r.right) + 'px';
+    $menu.onclick = (ev) => {
+      const el = ev.target.closest('.mi');
+      if (!el) return;
+      closeMenu();
+      run(items[Number(el.dataset.i)].act);
+    };
+  }
+  document.addEventListener('mousedown', (ev) => {
+    if (!$menu.contains(ev.target) && !ev.target.closest('[data-act="more"]')) closeMenu();
+  });
+  window.addEventListener('blur', closeMenu);
 
   /** REDEFINES / 01 记录的布局切换（当前分组标签页） */
   function renderLayouts() {
@@ -310,7 +347,7 @@
 
   function headerRowHtml(key, k, isAbs, top) {
     const { vis } = visibleCols(key);
-    const label = key === ERR_VIEW ? '#' : [S('hdrName'), S('hdrPic'), S('hdrPos')][k];
+    const label = key === ERR_VIEW ? '#' : [S('hdrName'), S('hdrPic'), S('hdrPos')][k].replace(/ /g, '');
     const gc = state.view === ORDER_VIEW ? groupColor(key) : '';
     let html = `<div class="row hdrrow k${k}${gc}" ${isAbs ? `data-top="${top}"` : ''}>`;
     html += `<div class="c l lh hd">${label}</div>`;
@@ -346,7 +383,9 @@
     const gc = view === ORDER_VIEW && !isErr ? groupColor(row.g) : '';
     let html = `<div class="row${isErr ? ' err' : ''}${i % 2 ? ' odd' : ''}${selRow}${gc}" data-top="${top}">`;
     html += `<div class="c l l0">${row.e + 1}</div>`;
-    html += `<div class="c l l1" title="${esc(S('offset'))} ${row.o}">0x${row.o.toString(16).toUpperCase().padStart(8, '0')}</div>`;
+    if (state.showOffset) {
+      html += `<div class="c l l1" title="${esc(S('offset'))} ${row.o}">0x${row.o.toString(16).toUpperCase().padStart(8, '0')}</div>`;
+    }
     html += `<div class="c l l2">${status}</div>`;
     const warnSet = isErr ? null : new Set(row.w);
     for (const { i: ci, col, px } of vis) {
@@ -427,6 +466,7 @@
     $rows.style.height = n * ROW_H + 'px';
     renderTabs();
     $scroller.classList.toggle('order', state.view === ORDER_VIEW);
+    $scroller.classList.toggle('nooff', !state.showOffset);
     renderBanner();
     renderLayouts();
     renderStaticHeader();
@@ -488,12 +528,13 @@
     const row = block[rowIdx - b * BLOCK];
     if (!row || row.t === 'hdr') return;
     state.selected = { view, row: rowIdx, col: colIdx };
+    state.selRec = `<span class="rec" title="${esc(S('offset'))} ${row.o}">#${row.e + 1} · 0x${row.o.toString(16).toUpperCase().padStart(8, '0')}</span>`;
     const sameEntry = state.dump && state.selEntry === row.e;
     state.selEntry = row.e;
     if (sameEntry) renderDump();
     else requestDump(row.e);
     if (row.t === 'err') {
-      $cellbar.innerHTML = `<span class="name">${esc(ERR_COLUMNS[colIdx].name)}</span><span class="value">${esc(row.c[colIdx])}</span>`;
+      $cellbar.innerHTML = state.selRec + `<span class="name">${esc(ERR_COLUMNS[colIdx].name)}</span><span class="value">${esc(row.c[colIdx])}</span>`;
     } else {
       vscode.postMessage({ type: 'cellInfo', g: row.g, e: row.e, col: colIdx });
     }
@@ -541,6 +582,7 @@
         const c = msg.info;
         if (!c) return;
         $cellbar.innerHTML =
+          (state.selRec || '') +
           `<span class="name" title="${esc(c.name)}">${esc(c.name)}</span>` +
           `<span class="value ${c.warn ? 'warn' : ''}">${esc(c.text)}</span>` +
           (c.value ? `<span class="num">${esc(S('cellValue', { value: c.value }))}</span>` : '') +

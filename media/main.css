@@ -378,3 +378,105 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 .dtitle { font-family: var(--vscode-font-family); padding-top: 2px; }
 .cmpdump { overflow: hidden; }
 .tab .auto { font-size: 0.85em; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; opacity: 0.75; }
+
+/* ======================================================================
+ * 0.4.1：紧凑布局与 VS Code 原生风格
+ * ====================================================================== */
+#toolbar { gap: 10px; padding: 4px 10px; }
+input[type='checkbox'] { accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-button-background)); margin: 0 2px 0 0; }
+
+/* 按钮：次按钮为默认，主按钮只用于「COPY句を選択…」 */
+button:not(.tab) {
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.18));
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  padding: 1px 8px;
+  line-height: 18px;
+}
+button:not(.tab):hover { background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.28)); }
+button.primary { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+button.primary:hover { background: var(--vscode-button-hoverBackground); }
+button.icon { padding: 1px 6px; min-width: 24px; font-weight: 700; }
+button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
+
+/* 标签页：编辑器标签的样子 */
+#tabs {
+  gap: 0;
+  padding: 0 4px;
+  background: var(--vscode-editorGroupHeader-tabsBackground, transparent);
+}
+.tab {
+  border: none;
+  border-top: 1px solid transparent;
+  border-right: 1px solid var(--vscode-tab-border, transparent);
+  border-radius: 0;
+  margin: 0;
+  padding: 4px 12px;
+  opacity: 1;
+  color: var(--vscode-tab-inactiveForeground, var(--vscode-foreground));
+  background: var(--vscode-tab-inactiveBackground, transparent);
+}
+.tab:hover { background: var(--vscode-tab-hoverBackground, var(--vscode-list-hoverBackground)); }
+.tab.active {
+  color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+  background: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+  border-top: 1px solid var(--vscode-tab-activeBorderTop, var(--vscode-focusBorder));
+  border-bottom: 1px solid var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+  margin-bottom: -1px;
+}
+.tab .auto { color: var(--vscode-descriptionForeground); }
+
+/* 提示条：一行，过长时省略（悬停显示全文） */
+#banner { flex-wrap: nowrap; gap: 6px; padding: 3px 10px; min-height: 22px; }
+#banner .ico { flex: 0 0 auto; width: 1.2em; text-align: center; }
+#banner.info .ico { color: var(--ok); }
+#banner.warn .ico { color: var(--warn); }
+#banner.error .ico { color: var(--err); }
+#banner .text { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 「⋯」菜单 */
+#menu {
+  display: none;
+  position: fixed;
+  z-index: 50;
+  min-width: 160px;
+  padding: 4px 0;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, var(--vscode-panel-border)));
+  border-radius: 4px;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.3));
+}
+#menu .mi { padding: 3px 14px; cursor: pointer; white-space: nowrap; }
+#menu .mi:hover {
+  color: var(--vscode-menu-selectionForeground, inherit);
+  background: var(--vscode-menu-selectionBackground, var(--vscode-list-activeSelectionBackground));
+}
+
+/* 状态栏（表格下方）：选中单元格的记录、字段、值、原始字节 */
+#cellbar {
+  border-bottom: none;
+  border-top: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background, transparent);
+  padding: 2px 10px;
+  min-height: 22px;
+  box-sizing: border-box;
+}
+#cellbar .rec { opacity: 0.7; white-space: nowrap; }
+#cellbar .name { min-width: 12ch; }
+
+/* 表格：左侧固定列变窄、偏移列可隐藏；属性・相对位置两行用小字号淡色 */
+.l2 { left: 22ch; width: 3ch; }
+.lh { width: 25ch; }
+.nooff .l2 { left: 8ch; }
+.nooff .lh { width: 11ch; }
+/* 左侧标签列的宽度以 ch 计，改字号会改变宽度，所以只改颜色 */
+.hdrrow.k1 .lh, .hdrrow.k2 .lh { font-weight: normal; color: var(--vscode-descriptionForeground, var(--vscode-foreground)); }
+.hd.pic, .hd.pos {
+  font-size: 0.85em;
+  font-weight: normal;
+  opacity: 1;
+  color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+}
+.hdrrow.k0 .hd { font-weight: 600; }

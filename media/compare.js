@@ -41,8 +41,8 @@
   app.innerHTML = [
     '<div id="toolbar"></div>',
     '<div id="banner"></div>',
-    '<div id="cellbar"></div>',
     `<div id="panes">${pane('a')}${pane('b')}</div>`,
+    '<div id="cellbar"></div>',
     '<div id="split" class="split"></div>',
     '<div id="dump" class="dump cmpdump"><div class="dcol" id="da"></div><div class="dcol" id="db"></div></div>',
   ].join('');
@@ -150,7 +150,8 @@
     if (d.a.errorCount || d.b.errorCount) parts.push(S('cmpErrors', { a: d.a.errorCount, b: d.b.errorCount }));
     parts.push(S('cmpCopybookNote'));
     $banner.className = st.chg || st.a || st.b ? 'warn' : 'info';
-    $banner.innerHTML = `<span class="text">${esc(parts.join(' '))}</span>`;
+    const icon = st.chg || st.a || st.b ? '⚠' : 'ℹ';
+    $banner.innerHTML = `<span class="ico">${icon}</span><span class="text" title="${esc(parts.join('\n'))}">${esc(parts.join(' '))}</span>`;
   }
 
   function renderTitles() {
