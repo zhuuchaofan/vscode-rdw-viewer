@@ -67,9 +67,15 @@ copybook 总长度与记录长度对不上时，点提示条上的「**解析详
 ## 开发
 
 ```bash
-npm install
+npm install     # 首次必须执行：安装 TypeScript 等开发依赖
 npm test        # 编译并运行单元测试
 npm run compile # 仅编译
+```
+
+打包成 vsix（会自动先编译）：
+
+```bash
+npx @vscode/vsce package --allow-missing-repository --skip-license
 ```
 
 按 F5 启动 Extension Development Host 调试。
