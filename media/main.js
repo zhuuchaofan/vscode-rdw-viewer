@@ -177,7 +177,7 @@
         ? `<span class="cb" title="${esc(g.copybookName)}">✔ ${esc(g.copybookName)}</span>`
         : `<span class="nocb">${esc(S('noCopybook'))}</span>`;
       const val = g.value !== null ? ` <span class="dv" title="${esc(g.discLabel || '')}">= ${esc(g.value)}</span>` : '';
-      return `<button class="tab ${state.view === g.key ? 'active' : ''}" data-v="${esc(g.key)}">${esc(S('bytes', { n: g.length }))}${val} <small>× ${g.count}</small>${cb}</button>`;
+      return `<button class="tab ${state.view === g.key ? 'active' : ''}" data-v="${esc(g.key)}"><span class="gdot${groupColor(g.key)}"></span>${esc(S('bytes', { n: g.length }))}${val} <small>× ${g.count}</small>${cb}</button>`;
     });
     if (d.errorCount) {
       parts.push(
@@ -315,15 +315,47 @@
   }
 
   /* ---------- 表头 ---------- */
+  /* ---------- 显示样式 ---------- */
+  const GROUP_COLORS = 6;
+  /** 分组的配色编号（文件顺序视图的色条、标签页的圆点） */
+  function groupColor(key) {
+    const i = state.init ? state.init.groups.findIndex((g) => g.key === key) : -1;
+    return i < 0 ? '' : ` gc${i % GROUP_COLORS}`;
+  }
+  const FILLER_RE = /^FILLER(\(|$)/i;
+
+  /**
+   * 文字的显示：末尾补位的空格显示为淡色的 ·（全角空格为 □），控制字符图形（␀ 等）着色。
+   * 中间的空格（如「山田　太郎」）是数据本身的一部分，不做标记。
+   */
+  function textHtml(s) {
+    const m = /[ \u3000]+$/.exec(s);
+    const head = m ? s.slice(0, m.index) : s;
+    let html = esc(head).replace(/[\u2400-\u241f\u2421]/g, (c) => `<span class="cc">${c}</span>`);
+    if (m) {
+      html += `<span class="ws">${m[0].replace(/ /g, '·').replace(/\u3000/g, '□')}</span>`;
+    }
+    return html;
+  }
+
+  /** 单元格内容：自动识别的正文 / 文字（标出空白）/ 解码后的数值 */
+  function cellHtml(text, col) {
+    if (col.kind === 'body') return segHtml(text);
+    if (col.type === 'bin' || col.kind === 'missing') return esc(text);
+    return textHtml(text);
+  }
+
   function headerRowHtml(key, k, isAbs, top) {
     const { vis } = visibleCols(key);
     const label = key === ERR_VIEW ? '#' : [S('hdrName'), S('hdrPic'), S('hdrPos')][k];
-    let html = `<div class="row" ${isAbs ? `data-top="${top}"` : ''}>`;
+    const gc = state.view === ORDER_VIEW ? groupColor(key) : '';
+    let html = `<div class="row hdrrow k${k}${gc}" ${isAbs ? `data-top="${top}"` : ''}>`;
     html += `<div class="c l lh hd">${label}</div>`;
     for (const { col, px } of vis) {
       const cls = (k === 0 ? '' : k === 1 ? ' pic' : ' pos') + (isNumeric(col) ? ' num' : '');
       const text = k === 0 ? col.name : k === 1 ? col.pic : col.start || '';
-      html += `<div class="c hd${cls} ${col.kind}" data-w="${px}" title="${esc(text)}">${esc(text)}</div>`;
+      const dim = FILLER_RE.test(col.name) || col.kind === 'extra' ? ' dim' : '';
+      html += `<div class="c hd${cls}${dim} ${col.kind}" data-w="${px}" title="${esc(text)}">${esc(text)}</div>`;
     }
     return html + '</div>';
   }
@@ -353,7 +385,9 @@
     const { vis } = visibleCols(key);
     const warn = !isErr && row.w.length > 0;
     const status = isErr ? '<span class="st-err">✖</span>' : warn ? '<span class="st-warn">⚠</span>' : '';
-    let html = `<div class="row ${isErr ? 'err' : ''}" data-top="${top}">`;
+    const selRow = state.selected && state.selected.view === view && state.selected.row === i ? ' selrow' : '';
+    const gc = view === ORDER_VIEW && !isErr ? groupColor(row.g) : '';
+    let html = `<div class="row${isErr ? ' err' : ''}${i % 2 ? ' odd' : ''}${selRow}${gc}" data-top="${top}">`;
     html += `<div class="c l l0">${row.e + 1}</div>`;
     html += `<div class="c l l1" title="${esc(S('offset'))} ${row.o}">0x${row.o.toString(16).toUpperCase().padStart(8, '0')}</div>`;
     html += `<div class="c l l2">${status}</div>`;
@@ -364,8 +398,10 @@
       const sel =
         state.selected && state.selected.view === view && state.selected.row === i && state.selected.col === ci ? ' sel' : '';
       const num = isNumeric(col) && col.kind !== 'missing' ? ' num' : '';
-      const body = col.kind === 'body' ? segHtml(text) : esc(text);
-      html += `<div class="c f${isW ? ' w' : ''}${sel}${num}" data-w="${px}" data-r="${i}" data-c="${ci}" title="${esc(plainSeg(text))}">${body}</div>`;
+      const dim = FILLER_RE.test(col.name) || col.kind === 'extra' ? ' dim' : '';
+      const blank = !isErr && text.trim() === '' ? ' blank' : '';
+      const body = isErr ? esc(text) : cellHtml(text, col);
+      html += `<div class="c f${isW ? ' w' : ''}${sel}${num}${dim}${blank}" data-w="${px}" data-r="${i}" data-c="${ci}" title="${esc(plainSeg(text))}">${body}</div>`;
     }
     return html + '</div>';
   }
@@ -433,6 +469,7 @@
     $inner.style.width = viewWidth();
     $rows.style.height = n * ROW_H + 'px';
     renderTabs();
+    $scroller.classList.toggle('order', state.view === ORDER_VIEW);
     renderBanner();
     renderLayouts();
     renderStaticHeader();

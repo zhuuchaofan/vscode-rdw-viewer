@@ -202,3 +202,60 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 .st-err { color: var(--err); }
 
 #empty { padding: 24px; opacity: 0.7; }
+
+/* ======================================================================
+ * 显示样式（跟随 VS Code 主题）
+ * ====================================================================== */
+:root {
+  --grid: color-mix(in srgb, var(--vscode-panel-border, #8888) 60%, transparent);
+  --grid-strong: var(--vscode-panel-border, #888);
+  --zebra: color-mix(in srgb, var(--vscode-foreground) 4%, var(--vscode-editor-background));
+  --num: var(--vscode-debugTokenExpression-number, #098658);
+  --faint: var(--vscode-editorWhitespace-foreground, rgba(128, 128, 128, 0.55));
+}
+
+/* 网格线：数据区用淡线，表头与左侧固定列的分隔用实线 */
+.c { border-right-color: var(--grid); border-bottom-color: var(--grid); }
+.row.hdrrow.k2 .c, #hdr .row:last-child .c { border-bottom: 2px solid var(--grid-strong); }
+.l2, .lh { border-right: 2px solid var(--grid-strong); }
+.hd { color: var(--vscode-foreground); }
+
+/* 隔行变色、悬停、选中行 */
+.row.odd .c:not(.l) { background: var(--zebra); }
+#rows .row:not(.hdrrow):hover .c { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12)); }
+.row.selrow .c { background: var(--vscode-list-inactiveSelectionBackground, rgba(0, 120, 215, 0.15)); }
+
+/* 按类型着色：数值、FILLER / 余り、空白、补位空格、控制字符 */
+.c.f.num { color: var(--num); }
+.c.dim, .c.f.blank { color: var(--vscode-disabledForeground, var(--faint)); }
+.hd.dim { font-weight: normal; }
+.ws { color: var(--faint); }
+.cc { color: var(--warn); font-weight: 600; }
+
+/* 提示条：说明文字可缩短，按钮放不下时换行 */
+#banner .text { flex: 1 1 320px; min-width: 0; }
+#banner button { flex: 0 0 auto; }
+
+/* 标橙、错误行优先于以上背景 */
+.c.f.w, .row.odd .c.f.w, .row.selrow .c.f.w, #rows .row:hover .c.f.w { background: rgba(217, 140, 31, 0.24); color: var(--vscode-editor-foreground); }
+.row.err .c, .row.err.odd .c { color: var(--err); background: rgba(229, 83, 75, 0.1); }
+
+/* 分组配色：文件顺序视图的色条 / 表头底色、标签页的圆点 */
+.gc0 { --gc: var(--vscode-charts-blue, #3794ff); }
+.gc1 { --gc: var(--vscode-charts-green, #388a34); }
+.gc2 { --gc: var(--vscode-charts-orange, #d18616); }
+.gc3 { --gc: var(--vscode-charts-purple, #652d90); }
+.gc4 { --gc: var(--vscode-charts-yellow, #bf8803); }
+.gc5 { --gc: var(--vscode-charts-red, #e51400); }
+#scroller.order .row[class*='gc'] .l0 { box-shadow: inset 4px 0 0 var(--gc); }
+#scroller.order .row.hdrrow .c { background: color-mix(in srgb, var(--gc) 16%, var(--vscode-editor-background)); }
+#scroller.order .row.hdrrow.k0 .c { border-top: 2px solid var(--gc); }
+.gdot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
+  background: var(--gc, transparent);
+}

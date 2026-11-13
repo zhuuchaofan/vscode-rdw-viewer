@@ -20,10 +20,13 @@ export function createDecoder(label: string): TextDecoder | undefined {
   }
 }
 
-/** 把控制字符替换成可见的占位符，避免破坏表格显示 */
+/**
+ * 把控制字符替换成 Unicode 的「控制字符图形」（0x00 → ␀、0x0D → ␍、0x7F → ␡），
+ * 既不破坏表格显示，又能看出是哪个字符，并且不会和空格的标记（·）混淆。
+ */
 export function sanitize(text: string): string {
   // eslint-disable-next-line no-control-regex
-  return text.replace(/[\u0000-\u001f\u007f]/g, '·');
+  return text.replace(/[\u0000-\u001f\u007f]/g, (c) => String.fromCharCode(c === '\u007f' ? 0x2421 : 0x2400 + c.charCodeAt(0)));
 }
 
 export function toHex(bytes: Uint8Array): string {

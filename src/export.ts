@@ -30,6 +30,7 @@ export function escapeField(value: string, format: ExportFormat): string {
 /** 自动识别的片段标记换成导出用的 ASCII 括号：COMP-3 → [值]，原始字节 → <十六进制> */
 export function exportText(text: string): string {
   return text
+    .replace(/[\u2400-\u241f\u2421]/g, '·') // 控制字符图形 → ·（Shift_JIS 中为 ・，与之前的导出结果相同）
     .replace(//g, '[')
     .replace(//g, ']')
     .replace(//g, '<')
