@@ -1,96 +1,105 @@
 # 发布步骤
 
-> 本说明根据以下官方文档整理（2026-11-13 读取），发布前请再核对一遍：
+发布者 ID：`zhuuchaofan`　扩展 ID：`zhuuchaofan.rdw-viewer`
+
+发布由 GitHub Actions 的 `.github/workflows/publish.yml` 完成：**推送 `v*` 标签**时，先跑测试，再用 OIDC 免令牌方式（Trusted Publishing）发布。仓库里不保存任何令牌。
+
+> 根据以下官方文档整理（2026-11-13 读取）：
 > - VS Code Marketplace：<https://code.visualstudio.com/api/working-with-extensions/publishing-extension>（源文件 `microsoft/vscode-docs`，DateApproved: 11/11/2026）
-> - Open VSX：<https://github.com/eclipse/openvsx/wiki/Publishing-Extensions>
+> - Open VSX：<https://github.com/eclipse/openvsx/wiki/Publishing-Extensions>、<https://github.com/eclipse/openvsx/wiki/Trusted-Publishing>
 
-**令牌只在你自己的电脑或 CI 的密钥里使用，不要提交到仓库，也不要贴到聊天里。**
+## 一次性设置
 
-## 0. 发布前检查
+### 1. VS Code Marketplace：登记 Trusted Publishing
 
-- [ ] `package.json` 的 `publisher` 改成你的发布者 ID（现在是占位的 `local`）。两个市场都用这个 ID：Marketplace 的发布者 ID，Open VSX 的命名空间。
-- [ ] 确认插件名 `rdw-viewer` 和显示名 `RDW Viewer` 在 Marketplace 上没有被占用（官方要求扩展名、显示名都唯一；被删除的扩展名也会被永久保留）。
-- [ ] README 中的截图使用相对路径，`vsce` 会根据 `repository` 字段改写成 GitHub 地址。**仓库需要是公开的**，否则市场页面上的图片无法显示。
-- [ ] 在 VS Code 中实际用一遍主要功能，尤其是「按字段值区分」的配置流程。
-- [ ] 更新 `CHANGELOG.md` 和 `package.json` 的 `version`。
-- [ ] 打包确认没有警告：
+1. 打开 <https://marketplace.visualstudio.com/manage>，进入发布者 `zhuuchaofan`。
+2. 选择 **Trusted Publishing** → 展开 **Create**，填写：
 
-```bash
-npm install
-npx @vscode/vsce package
-```
+   | 字段 | 值 |
+   | --- | --- |
+   | Policy name | `Release workflow`（任意） |
+   | Repository owner | `zhuuchaofan` |
+   | Repository | `vscode-rdw-viewer` |
+   | Workflow | `publish.yml` |
+   | Environment | 留空 |
 
-## 1. VS Code Marketplace
+3. 点 **Create**。
 
-### 重要：Azure DevOps 全局 PAT 于 2026-12-01 停用
+这个设置是按发布者登记的，不按扩展。官方文档没有说明「第一个版本能否直接用 `--oidc` 发布」。如果首次发布在 `marketplace` 这一步失败，可以先在同一个管理页面手动上传 vsix 发布第一版，之后的版本再走工作流。
 
-官方文档写明：*"On December 1, 2026, global Personal Access Tokens (PATs) in Azure DevOps are retired."*
-Marketplace 用的 PAT 必须选 **All accessible organizations**（全局 PAT），所以 12 月 1 日之后这种方式将无法使用。官方推荐改用免令牌的方式发布：
+### 2. Open VSX：第一版用令牌手动发布，再登记 Trusted Publisher
 
-- **GitHub Actions（Trusted Publishing）**：在发布者管理页面的「Trusted Publishing」中登记本仓库的工作流，工作流里执行 `npx @vscode/vsce publish --oidc`。凭证 15 分钟失效，不需要保存令牌。
-- **Azure Pipelines + Microsoft Entra ID**：`vsce publish --azure-credential`（需要 vsce 2.26.1 以上）。
+Open VSX 规定第一个版本必须用访问令牌发布，扩展存在之后才能登记 Trusted Publisher。
 
-### 创建发布者
-
-1. 打开 <https://marketplace.visualstudio.com/manage>，用 Microsoft 账号登录。
-2. 左侧点「Create publisher」，填写：
-   - **ID**：唯一，**创建后不能修改**。填到 `package.json` 的 `publisher`。
-   - **Name**：唯一的显示名称。
-
-### 方式 A：PAT（只能在 2026-12-01 之前使用，官方不推荐）
-
-1. 在 Azure DevOps 创建 Personal Access Token：
-   - Organization：**All accessible organizations**（选特定组织会出现 401/403）
-   - Scopes：**Custom defined** → **Show all scopes** → **Marketplace** → **Manage**
-2. 登录并发布：
-
-```bash
-npx @vscode/vsce login <发布者ID>
-```
-
-```bash
-npx @vscode/vsce publish
-```
-
-`login` 时会提示输入 PAT。
-
-### 方式 B：GitHub Actions（推荐，长期可用）
-
-在发布者页面配置 Trusted Publishing 后，用工作流执行：
-
-```bash
-npx @vscode/vsce publish --oidc
-```
-
-需要的话，我可以帮你写这个工作流文件。
-
-## 2. Open VSX（Antigravity、Cursor、VSCodium 等使用）
-
-1. 在 <https://accounts.eclipse.org/user/register> 注册 Eclipse 账号，「GitHub Username」填你登录 open-vsx.org 用的 GitHub 账号。
-2. 用 GitHub 登录 <https://open-vsx.org>。
-3. 打开 <https://open-vsx.org/user-settings/profile>，点「Log in with Eclipse」授权，然后点「Show Publisher Agreement」，读完点「Agree」。
-4. 在 <https://open-vsx.org/user-settings/tokens> 点「Generate New Token」，复制令牌（只显示一次）。
-5. 创建命名空间（只需一次，名字与 `publisher` 相同）：
-
-```bash
-npx ovsx create-namespace <发布者ID> -p <令牌>
-```
-
-6. 发布打好的 vsix：
-
-```bash
-npx ovsx publish rdw-viewer-0.2.0.vsix -p <令牌>
-```
-
-为避免令牌留在命令历史里，也可以先设置环境变量 `OVSX_PAT`，再省略 `-p`。PowerShell：
+1. 准备账号（已经有的可跳过）：
+   - 在 <https://accounts.eclipse.org/user/register> 注册 Eclipse 账号，「GitHub Username」填 `zhuuchaofan`。
+   - 用 GitHub 登录 <https://open-vsx.org>，在 <https://open-vsx.org/user-settings/profile> 点「Log in with Eclipse」，然后同意 Publisher Agreement。
+2. 在 <https://open-vsx.org/user-settings/tokens> 生成访问令牌（只显示一次）。
+3. 在本机项目目录设置令牌到环境变量（避免留在命令历史里），PowerShell：
 
 ```powershell
 $env:OVSX_PAT = Read-Host -AsSecureString | ConvertFrom-SecureString -AsPlainText
 ```
 
-Open VSX 也支持 GitHub Actions 免令牌发布（`npx ovsx publish --trusted-publishing`），但**第一个版本必须用令牌发布**。
+4. 创建命名空间（如果 `zhuuchaofan` 已经存在会报错，可忽略）：
 
-## 3. 发布后
+```powershell
+npx ovsx create-namespace zhuuchaofan
+```
 
-- 在两个市场的页面上确认图标、截图、说明是否正常显示。
-- 打 git 标签，例如 `v0.2.0`。
+5. 打包并发布第一版：
+
+```powershell
+npm ci
+```
+
+```powershell
+npx vsce package
+```
+
+```powershell
+npx ovsx publish rdw-viewer-0.2.0.vsix
+```
+
+6. 登记 Trusted Publisher：打开 <https://open-vsx.org/user-settings/trusted-publishers>，选择命名空间 `zhuuchaofan` 和扩展，Provider 选 GitHub Actions：
+
+   | 字段 | 值 |
+   | --- | --- |
+   | Organization or User name | `zhuuchaofan` |
+   | Repository name | `vscode-rdw-viewer` |
+   | Workflow filename | `publish.yml` |
+   | Environment name | 留空 |
+
+7. 在 GitHub 仓库 **Settings → Secrets and variables → Actions → Variables** 添加变量 `OPENVSX_TRUSTED`，值为 `true`。之后工作流会同时发布到 Open VSX。
+8. 删除第 2 步的令牌（或保留以备手动发布）。
+
+## 每次发布
+
+1. 更新 `package.json` 的 `version` 和 `CHANGELOG.md`，合并到 `main`。
+2. 在 `main` 上打标签并推送（标签必须与 `package.json` 的版本一致，否则工作流会报错停止）：
+
+```bash
+git checkout main
+```
+
+```bash
+git pull
+```
+
+```bash
+git tag v0.2.0
+```
+
+```bash
+git push origin v0.2.0
+```
+
+3. 在 GitHub 的 **Actions → Publish** 查看结果，然后到两个市场的页面确认显示。
+
+失败后修好问题，可以在 **Actions → Publish → Run workflow** 手动重新运行（发布的是当前 `package.json` 的版本；同一版本已经发布过的话会失败）。
+
+## 发布前检查
+
+- [ ] 在 VS Code 中实际用一遍主要功能，尤其是「按字段值区分」的配置流程。
+- [ ] 本地 `npm test` 通过，`npx vsce package` 没有警告。
+- [ ] 扩展名、显示名在 Marketplace 上唯一（官方要求；被删除的扩展名会被永久保留）。
