@@ -2,7 +2,7 @@
   "name": "rdw-viewer",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "zhuuchaofan",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -98,7 +98,7 @@
             "big",
             "little"
           ],
-          "default": "followBinaryEndian",
+          "default": "little",
           "description": "%config.comp5Endian%"
         },
         "rdwViewer.floatFormat": {

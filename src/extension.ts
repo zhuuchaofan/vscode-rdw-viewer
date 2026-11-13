@@ -8,7 +8,7 @@ import { encodeShiftJis } from './sjisEncode';
 import { ERR_VIEW } from './session';
 import { parseCopybook, Copybook, selectRecord } from './copybook';
 import { MismatchMode } from './layout';
-import { CompareSession, KeyPart, keyLabel } from './compare';
+import { CompareSession, KeyPart, MatchMode, keyLabel } from './compare';
 
 const COPYBOOK_GLOB = '**/*.{cpy,CPY,cbl,CBL,cob,COB,copy,COPY}';
 const MAPPING_FILE = ['.vscode', 'rdw-viewer.json'];
@@ -170,7 +170,7 @@ function config() {
     mismatch: c.get<MismatchMode>('lengthMismatch', 'lenient'),
     hiddenPattern: c.get<string>('hiddenFieldPattern', '^FILLER$'),
     binaryEndian: c.get<'big' | 'little'>('binaryEndian', 'big'),
-    comp5Endian: c.get<'followBinaryEndian' | 'big' | 'little'>('comp5Endian', 'followBinaryEndian'),
+    comp5Endian: c.get<'followBinaryEndian' | 'big' | 'little'>('comp5Endian', 'little'),
     floatFormat: c.get<'ieee' | 'ibm'>('floatFormat', 'ieee'),
     autoPacked: c.get<boolean>('autoDetectPacked', true),
     exportEncoding: c.get<'shift_jis' | 'utf-8-bom'>('exportEncoding', 'shift_jis'),
@@ -823,6 +823,39 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
 /**
  * 比较用的键项目：从 A 的 copybook 字段中多选，或手动输入位置范围（例：1-3,8-10）。
  */
+/** 两个文件的条目合计超过这个数时，比较在后台分批执行，显示进度并可以取消 */
+const COMPARE_PROGRESS_MIN = 200_000;
+
+/**
+ * 执行比较。记录多时显示进度通知、可以取消；返回 false 表示已取消（cmp 保持原来的结果）。
+ */
+async function runCompare(cmp: CompareSession, mode: MatchMode, keys: KeyPart[], names: string[]): Promise<boolean> {
+  if (cmp.a.index.count + cmp.b.index.count < COMPARE_PROGRESS_MIN) {
+    cmp.configure(mode, keys);
+    return true;
+  }
+  const ok = await vscode.window.withProgress(
+    { location: vscode.ProgressLocation.Notification, title: t('ext.cmp.progress', { a: names[0], b: names[1] }), cancellable: true },
+    (progress, token) => {
+      let shown = 0;
+      return cmp.configureAsync(mode, keys, {
+        isCancelled: () => token.isCancellationRequested,
+        onProgress: (f) => {
+          const pct = Math.floor(f * 100);
+          if (pct > shown) {
+            progress.report({ increment: pct - shown });
+            shown = pct;
+          }
+        },
+      });
+    }
+  );
+  if (!ok) {
+    vscode.window.showInformationMessage(t('ext.cmp.cancelled'));
+  }
+  return ok;
+}
+
 async function pickCompareKey(cmp: CompareSession): Promise<KeyPart[] | undefined> {
   interface Item extends vscode.QuickPickItem {
     part?: KeyPart;
@@ -910,8 +943,11 @@ async function openCompare(ctx: vscode.ExtensionContext, a?: vscode.Uri, b?: vsc
   if (!la || !lb) {
     return;
   }
-  let cmp = new CompareSession(la.session, lb.session);
+  let cmp = new CompareSession(la.session, lb.session, false);
   let files = [la.fileName, lb.fileName];
+  if (!(await runCompare(cmp, 'index', [], files))) {
+    return;
+  }
   const panel = createPanel(ctx, `RDW: ${la.fileName} ⇄ ${lb.fileName}`, 'compare.js');
   const web = panel.webview;
 
@@ -928,6 +964,18 @@ async function openCompare(ctx: vscode.ExtensionContext, a?: vscode.Uri, b?: vsc
       version: String(ctx.extension.packageJSON.version ?? ''),
       strings: uiStrings(),
     });
+  };
+
+  // 重新比较的途中（大文件时为异步）不接受另一次重新比较；显示用的请求照常处理（结果在算完后才替换）
+  let busy = false;
+  const recompare = async (fn: () => Promise<void>) => {
+    if (busy) return;
+    busy = true;
+    try {
+      await fn();
+    } finally {
+      busy = false;
+    }
   };
 
   web.onDidReceiveMessage(async (msg) => {
@@ -953,27 +1001,33 @@ async function openCompare(ctx: vscode.ExtensionContext, a?: vscode.Uri, b?: vsc
       case 'findDiff':
         web.postMessage({ type: 'found', i: cmp.findDiff(!!msg.d, msg.from, msg.dir < 0 ? -1 : 1), dir: msg.dir });
         break;
-      case 'chooseKey': {
-        const keys = await pickCompareKey(cmp);
-        if (keys) {
-          cmp.configure('key', keys);
-        }
-        sendInit();
+      case 'chooseKey':
+        await recompare(async () => {
+          const keys = await pickCompareKey(cmp);
+          if (keys) {
+            await runCompare(cmp, 'key', keys, files);
+          }
+          sendInit();
+        });
         break;
-      }
       case 'setIndex':
-        cmp.configure('index', []);
-        sendInit();
+        await recompare(async () => {
+          await runCompare(cmp, 'index', [], files);
+          sendInit();
+        });
         break;
-      case 'swap': {
-        const next = new CompareSession(cmp.b, cmp.a);
-        next.configure(cmp.mode, cmp.keys);
-        cmp = next;
-        files = [files[1], files[0]];
-        panel.title = `RDW: ${files[0]} ⇄ ${files[1]}`;
-        sendInit();
+      case 'swap':
+        await recompare(async () => {
+          const next = new CompareSession(cmp.b, cmp.a, false);
+          const swapped = [files[1], files[0]];
+          if (await runCompare(next, cmp.mode, cmp.keys, swapped)) {
+            cmp = next;
+            files = swapped;
+            panel.title = `RDW: ${files[0]} ⇄ ${files[1]}`;
+          }
+          sendInit();
+        });
         break;
-      }
     }
   });
 }

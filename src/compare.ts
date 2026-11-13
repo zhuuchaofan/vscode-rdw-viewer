@@ -74,16 +74,47 @@ export interface CompareInit {
 }
 
 function sameBytes(x: Uint8Array, y: Uint8Array): boolean {
-  if (x.length !== y.length) {
-    return false;
-  }
-  for (let i = 0; i < x.length; i++) {
-    if (x[i] !== y[i]) {
+  return x.length === y.length && sameRange(x, 0, y, 0, x.length);
+}
+
+/** x[xo..xo+len) 与 y[yo..yo+len) 相同（不创建子数组，逐条比较大量记录时避免分配） */
+function sameRange(x: Uint8Array, xo: number, y: Uint8Array, yo: number, len: number): boolean {
+  for (let i = 0; i < len; i++) {
+    if (x[xo + i] !== y[yo + i]) {
       return false;
     }
   }
   return true;
 }
+
+/** 比较结果（算完后一次性替换，中途取消时保留原来的结果） */
+interface CompareState {
+  mode: MatchMode;
+  keys: KeyPart[];
+  pa: Int32Array;
+  pb: Int32Array;
+  st: Uint8Array;
+  stats: CompareStats;
+  comboOf: Int32Array;
+  combos: Array<{ ga: string | null; gb: string | null }>;
+  all: Int32Array;
+  diff: Int32Array;
+  inline: boolean;
+}
+
+export interface CompareProgress {
+  /** 返回 true 时中止，比较结果保持不变 */
+  isCancelled?: () => boolean;
+  /** 进度（0~1） */
+  onProgress?: (fraction: number) => void;
+  /** 连续占用事件循环的最长时间（毫秒）；省略时为 30 */
+  sliceMs?: number;
+}
+
+/** 每处理这么多条记录交回一次控制权（检查取消、报告进度） */
+const CHUNK = 1 << 14;
+/** 异步比较时，连续占用事件循环的最长时间（毫秒）的默认值 */
+const SLICE_MS = 30;
 
 /** 两组列的位置、长度、名称完全相同（同一 copybook 布局） */
 export function sameShape(x: Column[], y: Column[]): boolean {
@@ -119,10 +150,10 @@ export function keyLabel(keys: KeyPart[]): string {
 }
 
 export class CompareSession {
-  private pa = new Int32Array(0);
-  private pb = new Int32Array(0);
-  private st = new Uint8Array(0);
-  private comboOf = new Int32Array(0);
+  private pa: Int32Array = new Int32Array(0);
+  private pb: Int32Array = new Int32Array(0);
+  private st: Uint8Array = new Uint8Array(0);
+  private comboOf: Int32Array = new Int32Array(0);
   private combos: Array<{ ga: string | null; gb: string | null }> = [];
   private all: Int32Array = new Int32Array(0);
   private diff: Int32Array = new Int32Array(0);
@@ -131,97 +162,213 @@ export class CompareSession {
   mode: MatchMode = 'index';
   keys: KeyPart[] = [];
 
+  /** compute=false 时不立即比较（之后由调用方执行 configureAsync，大文件时可以取消） */
   constructor(
     readonly a: RdwSession,
-    readonly b: RdwSession
+    readonly b: RdwSession,
+    compute = true
   ) {
-    this.configure('index', []);
-  }
-
-  private keyOf(s: RdwSession, e: number, keys: KeyPart[]): string | null {
-    const body = s.body(e);
-    let k = '';
-    for (const part of keys) {
-      if (part.start - 1 + part.length > body.length) {
-        return null;
-      }
-      for (let i = part.start - 1; i < part.start - 1 + part.length; i++) {
-        k += String.fromCharCode(body[i]);
-      }
-      k += '\u0001';
+    if (compute) {
+      this.configure('index', []);
     }
-    return k;
   }
 
-  /** 设置对应方式并重新比较 */
+  /** 设置对应方式并重新比较（同步；大文件请用 configureAsync） */
   configure(mode: MatchMode, keys: KeyPart[]): void {
-    this.mode = mode === 'key' && keys.length > 0 ? 'key' : 'index';
-    this.keys = this.mode === 'key' ? keys.map((k) => ({ ...k })) : [];
-    const ra = this.a.recordEntries();
-    const rb = this.b.recordEntries();
-    const pa: number[] = [];
-    const pb: number[] = [];
+    const it = this.compute(mode, keys);
+    let r = it.next();
+    while (!r.done) {
+      r = it.next();
+    }
+    this.commit(r.value);
+  }
+
+  /**
+   * 设置对应方式并重新比较，中途定期交回事件循环，可以取消。
+   * 返回 false 表示已取消，此时比较结果保持原样。
+   */
+  async configureAsync(mode: MatchMode, keys: KeyPart[], opts: CompareProgress = {}): Promise<boolean> {
+    const it = this.compute(mode, keys);
+    let last = performance.now();
+    let r = it.next();
+    while (!r.done) {
+      if (performance.now() - last >= (opts.sliceMs ?? SLICE_MS)) {
+        opts.onProgress?.(r.value);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        if (opts.isCancelled?.()) {
+          return false;
+        }
+        last = performance.now();
+      }
+      r = it.next();
+    }
+    this.commit(r.value);
+    return true;
+  }
+
+  private commit(s: CompareState): void {
+    this.mode = s.mode;
+    this.keys = s.keys;
+    this.pa = s.pa;
+    this.pb = s.pb;
+    this.st = s.st;
+    this.stats = s.stats;
+    this.comboOf = s.comboOf;
+    this.combos = s.combos;
+    this.all = s.all;
+    this.diff = s.diff;
+    this.inline = s.inline;
+  }
+
+  /** 比较的主体：每处理一批记录 yield 一次进度（0~1），结束时返回结果 */
+  private *compute(reqMode: MatchMode, reqKeys: KeyPart[]): Generator<number, CompareState> {
+    const mode: MatchMode = reqMode === 'key' && reqKeys.length > 0 ? 'key' : 'index';
+    const keys = mode === 'key' ? reqKeys.map((k) => ({ ...k })) : [];
+    const A = this.a;
+    const B = this.b;
+    const bufA = A.raw;
+    const bufB = B.raw;
+    // 整条正文用 Buffer.compare（原生 memcmp）比较，比逐字节的循环快得多
+    const nodeA = Buffer.from(bufA.buffer, bufA.byteOffset, bufA.byteLength);
+    const nodeB = Buffer.from(bufB.buffer, bufB.byteOffset, bufB.byteLength);
+    const ra = A.recordEntries();
+    const rb = B.recordEntries();
+    const na = ra.length;
+    const nb = rb.length;
+    let pa: Int32Array;
+    let pb: Int32Array;
     let noKeyA = 0;
     let noKeyB = 0;
 
-    if (this.mode === 'index') {
-      for (let i = 0; i < Math.max(ra.length, rb.length); i++) {
-        pa.push(i < ra.length ? ra[i] : -1);
-        pb.push(i < rb.length ? rb[i] : -1);
-      }
+    if (mode === 'index') {
+      const n = Math.max(na, nb);
+      pa = new Int32Array(n).fill(-1);
+      pb = new Int32Array(n).fill(-1);
+      pa.set(ra);
+      pb.set(rb);
     } else {
-      // B 的键 → B 中的下标队列
-      const queue = new Map<string, number[]>();
-      rb.forEach((e, j) => {
-        const k = this.keyOf(this.b, e, this.keys);
-        if (k === null) {
+      // 键直接按字节做哈希和比较（开放定址哈希表），不为每条记录生成字符串
+      const keyEnd = Math.max(...keys.map((k) => k.start - 1 + k.length));
+      const hashOf = (buf: Uint8Array, base: number): number => {
+        let h = 0x811c9dc5;
+        for (const part of keys) {
+          const from = base + part.start - 1;
+          for (let i = from; i < from + part.length; i++) {
+            h = Math.imul(h ^ buf[i], 0x01000193);
+          }
+        }
+        return h >>> 0;
+      };
+      const sameKey = (x: Uint8Array, xb: number, y: Uint8Array, yb: number): boolean =>
+        keys.every((part) => sameRange(x, xb + part.start - 1, y, yb + part.start - 1, part.length));
+
+      let cap = 16;
+      while (cap < nb * 2) {
+        cap *= 2;
+      }
+      const mask = cap - 1;
+      // table：槽 → 该键在 B 中最早出现、尚未配对的下标 + 1（0 = 空）；next：同一键的下一次出现
+      const table = new Int32Array(cap);
+      const next = new Int32Array(nb).fill(-1);
+      // 倒序插入，使每个键的链表按出现顺序排列
+      // 热循环放在普通函数里（生成器函数本身优化得较差），生成器只负责分批调用
+      const insertB = (j: number): void => {
+        const e = rb[j];
+        if (keyEnd > B.bodyLength(e)) {
           noKeyB++;
           return;
         }
-        const q = queue.get(k);
-        q ? q.push(j) : queue.set(k, [j]);
-      });
-      const matchOfA: number[] = ra.map((e) => {
-        const k = this.keyOf(this.a, e, this.keys);
-        if (k === null) {
-          noKeyA++;
-          return -1;
+        const base = B.bodyOffset(e);
+        let slot = hashOf(bufB, base) & mask;
+        for (;;) {
+          const head = table[slot];
+          if (head === 0) {
+            table[slot] = j + 1;
+            break;
+          }
+          if (sameKey(bufB, base, bufB, B.bodyOffset(rb[head - 1]))) {
+            next[j] = head - 1;
+            table[slot] = j + 1;
+            break;
+          }
+          slot = (slot + 1) & mask;
         }
-        const q = queue.get(k);
-        return q && q.length ? q.shift()! : -1;
-      });
-      const matchedB = new Uint8Array(rb.length);
-      matchOfA.forEach((j) => j >= 0 && (matchedB[j] = 1));
+      };
+      for (let hi = nb; hi > 0; hi -= CHUNK) {
+        for (let j = hi - 1, lo = Math.max(0, hi - CHUNK); j >= lo; j--) {
+          insertB(j);
+        }
+        yield 0.25 * (1 - hi / nb);
+      }
+
+      const matchOfA = new Int32Array(na).fill(-1);
+      const matchedB = new Uint8Array(nb);
+      let matched = 0;
+      const matchA = (i: number): void => {
+        const e = ra[i];
+        if (keyEnd > A.bodyLength(e)) {
+          noKeyA++;
+          return;
+        }
+        const base = A.bodyOffset(e);
+        let slot = hashOf(bufA, base) & mask;
+        for (;;) {
+          const head = table[slot];
+          if (head === 0) {
+            break;
+          }
+          if (head > 0 && sameKey(bufA, base, bufB, B.bodyOffset(rb[head - 1]))) {
+            const j = head - 1;
+            matchOfA[i] = j;
+            matchedB[j] = 1;
+            matched++;
+            // 同一键的下一次出现顶上来；用完后留下墓碑（-1），以免打断探测
+            table[slot] = next[j] >= 0 ? next[j] + 1 : -1;
+            break;
+          }
+          slot = (slot + 1) & mask;
+        }
+      };
+      for (let lo = 0; lo < na; lo += CHUNK) {
+        for (let i = lo, hi = Math.min(na, lo + CHUNK); i < hi; i++) {
+          matchA(i);
+        }
+        yield 0.25 + 0.25 * (lo / na);
+      }
+
       // 以 A 的顺序为准；只在 B 中的记录在经过它在 B 中的位置时插入
-      let nb = 0;
+      const n = na + nb - matched;
+      pa = new Int32Array(n);
+      pb = new Int32Array(n);
+      let p = 0;
+      let cur = 0;
       const flushB = (upto: number) => {
-        for (; nb < upto; nb++) {
-          if (!matchedB[nb]) {
-            pa.push(-1);
-            pb.push(rb[nb]);
+        for (; cur < upto; cur++) {
+          if (!matchedB[cur]) {
+            pa[p] = -1;
+            pb[p++] = rb[cur];
           }
         }
       };
-      ra.forEach((e, i) => {
+      for (let i = 0; i < na; i++) {
         const j = matchOfA[i];
-        if (j >= 0 && j >= nb) {
+        if (j >= 0 && j >= cur) {
           flushB(j);
-          nb = j + 1;
+          cur = j + 1;
         }
-        pa.push(e);
-        pb.push(j >= 0 ? rb[j] : -1);
-      });
-      flushB(rb.length);
+        pa[p] = ra[i];
+        pb[p++] = j >= 0 ? rb[j] : -1;
+      }
+      flushB(nb);
     }
 
     const n = pa.length;
-    this.pa = Int32Array.from(pa);
-    this.pb = Int32Array.from(pb);
-    this.st = new Uint8Array(n);
+    const st = new Uint8Array(n);
     const stats: CompareStats = { pairs: n, same: 0, chg: 0, a: 0, b: 0, noKeyA, noKeyB };
-    for (let p = 0; p < n; p++) {
-      const ea = this.pa[p];
-      const eb = this.pb[p];
+    const done = mode === 'key' ? 0.5 : 0;
+    const status = (p: number): void => {
+      const ea = pa[p];
+      const eb = pb[p];
       let s: number;
       if (ea < 0) {
         s = ST_B;
@@ -229,61 +376,97 @@ export class CompareSession {
       } else if (eb < 0) {
         s = ST_A;
         stats.a++;
-      } else if (sameBytes(this.a.body(ea), this.b.body(eb))) {
-        s = ST_SAME;
-        stats.same++;
       } else {
-        s = ST_CHG;
-        stats.chg++;
-      }
-      this.st[p] = s;
-    }
-    this.stats = stats;
-    this.buildDisplay();
-  }
-
-  /** 分组组合（缺失的一侧沿用上一条的分组）及显示行 */
-  private buildDisplay(): void {
-    const n = this.pa.length;
-    const comboIdx = new Map<string, number>();
-    this.combos = [];
-    this.comboOf = new Int32Array(n);
-    // 缺失的一侧沿用上一条的分组；开头缺失时用该侧第一条记录的分组
-    const firstA = this.pa.find((e) => e >= 0);
-    const firstB = this.pb.find((e) => e >= 0);
-    let lastA: string | null = firstA !== undefined ? this.a.groupOfEntry(firstA)?.key ?? null : null;
-    let lastB: string | null = firstB !== undefined ? this.b.groupOfEntry(firstB)?.key ?? null : null;
-    for (let p = 0; p < n; p++) {
-      if (this.pa[p] >= 0) lastA = this.a.groupOfEntry(this.pa[p])?.key ?? null;
-      if (this.pb[p] >= 0) lastB = this.b.groupOfEntry(this.pb[p])?.key ?? null;
-      const key = `${lastA}\u0001${lastB}`;
-      let ci = comboIdx.get(key);
-      if (ci === undefined) {
-        ci = this.combos.length;
-        comboIdx.set(key, ci);
-        this.combos.push({ ga: lastA, gb: lastB });
-      }
-      this.comboOf[p] = ci;
-    }
-    this.inline = this.combos.length > 1;
-    const build = (onlyDiff: boolean): Int32Array => {
-      const out: number[] = [];
-      let last = -1;
-      for (let p = 0; p < n; p++) {
-        if (onlyDiff && this.st[p] === ST_SAME) {
-          continue;
+        const len = A.bodyLength(ea);
+        const oa = A.bodyOffset(ea);
+        const ob = B.bodyOffset(eb);
+        if (len === B.bodyLength(eb) && nodeA.compare(nodeB, ob, ob + len, oa, oa + len) === 0) {
+          s = ST_SAME;
+          stats.same++;
+        } else {
+          s = ST_CHG;
+          stats.chg++;
         }
-        const ci = this.comboOf[p];
-        if (this.inline && ci !== last) {
-          for (let k = 0; k < 3; k++) out.push(-1 - (ci * 3 + k));
-          last = ci;
-        }
-        out.push(p);
       }
-      return Int32Array.from(out);
+      st[p] = s;
     };
-    this.all = build(false);
-    this.diff = build(true);
+    for (let lo = 0; lo < n; lo += CHUNK) {
+      for (let p = lo, hi = Math.min(n, lo + CHUNK); p < hi; p++) {
+        status(p);
+      }
+      yield done + (0.9 - done) * (lo / n);
+    }
+
+    // 分组组合（缺失的一侧沿用上一条的分组；开头缺失时用该侧第一条记录的分组）及显示行
+    const combos: Array<{ ga: string | null; gb: string | null }> = [];
+    const comboIdx = new Map<string, number>();
+    const comboOf = new Int32Array(n);
+    const firstA = pa.find((e) => e >= 0);
+    const firstB = pb.find((e) => e >= 0);
+    let lastA: string | null = firstA !== undefined ? A.groupOfEntry(firstA)?.key ?? null : null;
+    let lastB: string | null = firstB !== undefined ? B.groupOfEntry(firstB)?.key ?? null : null;
+    let prevA: string | null | undefined;
+    let prevB: string | null | undefined;
+    let ci = 0;
+    const combo = (p: number): void => {
+      if (pa[p] >= 0) lastA = A.groupOfEntry(pa[p])?.key ?? null;
+      if (pb[p] >= 0) lastB = B.groupOfEntry(pb[p])?.key ?? null;
+      if (lastA !== prevA || lastB !== prevB) {
+        // 组合和上一条不同时才查表（绝大多数记录与上一条相同）
+        const key = `${lastA}\u0001${lastB}`;
+        let found = comboIdx.get(key);
+        if (found === undefined) {
+          found = combos.length;
+          comboIdx.set(key, found);
+          combos.push({ ga: lastA, gb: lastB });
+        }
+        ci = found;
+        prevA = lastA;
+        prevB = lastB;
+      }
+      comboOf[p] = ci;
+    };
+    for (let lo = 0; lo < n; lo += CHUNK) {
+      for (let p = lo, hi = Math.min(n, lo + CHUNK); p < hi; p++) {
+        combo(p);
+      }
+      yield 0.9 + 0.05 * (lo / n);
+    }
+    const inline = combos.length > 1;
+    const build = (onlyDiff: boolean): Int32Array => {
+      let rows = 0;
+      let last = -1;
+      // 先数行数再填，避免中间数组
+      for (let pass = 0; pass < 2; pass++) {
+        const out = pass === 1 ? new Int32Array(rows) : undefined;
+        rows = 0;
+        last = -1;
+        for (let p = 0; p < n; p++) {
+          if (onlyDiff && st[p] === ST_SAME) {
+            continue;
+          }
+          const c = comboOf[p];
+          if (inline && c !== last) {
+            for (let k = 0; k < 3; k++) {
+              if (out) out[rows] = -1 - (c * 3 + k);
+              rows++;
+            }
+            last = c;
+          }
+          if (out) out[rows] = p;
+          rows++;
+        }
+        if (out) {
+          return out;
+        }
+      }
+      return new Int32Array(0);
+    };
+    yield 0.95;
+    const all = build(false);
+    yield 0.98;
+    const diff = build(true);
+    return { mode, keys, pa, pb, st, stats, comboOf, combos, all, diff, inline };
   }
 
   getStats(): CompareStats {
