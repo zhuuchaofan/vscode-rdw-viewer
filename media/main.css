@@ -97,7 +97,7 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 #banner .text { flex: 1; }
 #banner:empty { display: none; }
 
-/* ---------- 单元格信息条（对应 TF-LINDA 左上角） ---------- */
+/* ---------- 单元格信息条（表格上方：字段名 / 值 / 原始字节） ---------- */
 #cellbar {
   display: flex;
   gap: 8px;

@@ -6,6 +6,7 @@
  *
  * 本模块不依赖 VS Code，便于单元测试。
  */
+import { t } from './i18n';
 
 export interface RdwIndex {
   /** 文件总字节数 */
@@ -83,11 +84,11 @@ export function scanRdw(buf: Uint8Array): RdwIndex {
     const limit = Math.min(size - MIN_RECORD, pos + RESYNC_LIMIT);
     for (let q = pos + 1; q <= limit; q++) {
       if (chainValidAt(buf, view, q)) {
-        pushError(pos, q - pos, `${msg}；已跳过 ${q - pos} 字节，在偏移 ${hex(q)} 重新找到记录边界`);
+        pushError(pos, q - pos, t('rdw.resynced', { msg, n: q - pos, off: hex(q) }));
         return q;
       }
     }
-    pushError(pos, size - pos, `${msg}；此后无法重新找到有效的记录边界，剩余 ${size - pos} 字节未解析`);
+    pushError(pos, size - pos, t('rdw.noResync', { msg, n: size - pos }));
     return size;
   };
 
@@ -98,7 +99,7 @@ export function scanRdw(buf: Uint8Array): RdwIndex {
       pushError(
         pos,
         remain,
-        `偏移 ${hex(pos)}：文件末尾仅剩 ${remain} 字节，不足一条记录所需的最少 ${MIN_RECORD} 字节（前后 RDW），文件可能被截断`
+        t('rdw.tailShort', { off: hex(pos), remain, min: MIN_RECORD })
       );
       break;
     }
@@ -108,14 +109,14 @@ export function scanRdw(buf: Uint8Array): RdwIndex {
     if (end + RDW_SIZE > size) {
       pos = resync(
         pos,
-        `偏移 ${hex(pos)}：前置 RDW 声明正文 ${len} 字节，需要 ${RDW_SIZE + len + RDW_SIZE} 字节，但文件只剩 ${remain} 字节（文件被截断，或前置 RDW 长度错误）`
+        t('rdw.truncated', { off: hex(pos), len, need: RDW_SIZE + len + RDW_SIZE, remain })
       );
       continue;
     }
 
     const trailing = view.getUint16(end, true);
     if (trailing !== len) {
-      const msg = `偏移 ${hex(pos)}：前置 RDW 长度=${len}，后置 RDW（偏移 ${hex(end)}）长度=${trailing}，前后不一致`;
+      const msg = t('rdw.mismatch', { off: hex(pos), len, endOff: hex(end), trailing });
       const next = end + RDW_SIZE;
       if (next === size || validAt(buf, view, next) >= 0) {
         // 记录边界本身可信（下一条记录正常），把这一条整体标为错误

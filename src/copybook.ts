@@ -12,6 +12,7 @@
  * 不支持（会产生警告）：REDEFINES（被忽略，不占位置）、OCCURS DEPENDING ON（按最大次数展开）、
  * 多个 01（只使用第一个）。
  */
+import { t } from './i18n';
 
 export type FieldType = 'alnum' | 'num' | 'bin';
 
@@ -223,11 +224,11 @@ function parseStatement(stmt: string, warnings: string[]): Node | undefined {
     const at = tokens.findIndex((t) => LEVEL_RE.test(t));
     if (at < 0) {
       if (!IGNORABLE.has(tokens[0].toUpperCase())) {
-        warnings.push(`无法识别的语句已跳过：「${stmt.slice(0, 40)}」`);
+        warnings.push(t('cpy.unknownStmt', { stmt: stmt.slice(0, 40) }));
       }
       return undefined;
     }
-    warnings.push(`语句开头的「${tokens.slice(0, at).join(' ').slice(0, 30)}」无法识别，已跳过`);
+    warnings.push(t('cpy.unknownPrefix', { text: tokens.slice(0, at).join(' ').slice(0, 30) }));
     tokens = tokens.slice(at);
   }
   const level = parseInt(tokens[0], 10);
@@ -284,7 +285,7 @@ function parseStatement(stmt: string, warnings: string[]): Node | undefined {
       }
       node.occurs = Number.isFinite(n) && n > 0 ? n : 1;
     } else if (k === 'DEPENDING') {
-      warnings.push(`${node.name}: OCCURS DEPENDING ON 按最大次数展开`);
+      warnings.push(t('cpy.occursDepending', { name: node.name }));
       i++;
     } else if (k === 'REDEFINES') {
       node.redefines = tokens[i + 1];
@@ -311,7 +312,7 @@ function parseStatement(stmt: string, warnings: string[]): Node | undefined {
 
 function flatten(node: Node, offset: number, suffix: string, out: CopyField[], warnings: string[]): number {
   if (node.redefines) {
-    warnings.push(`${node.name}: REDEFINES ${node.redefines} 已忽略（不占位置）`);
+    warnings.push(t('cpy.redefines', { name: node.name, target: node.redefines }));
     return offset;
   }
   let off = offset;

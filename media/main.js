@@ -1,4 +1,4 @@
-/* RDW Viewer webview：TF-LINDA 风格的记录表格（虚拟滚动）。
+/* RDW Viewer webview：按 copybook 字段横向展开的记录表格（虚拟滚动）。
  *
  * 消息协议（host ⇄ webview）见 src/extension.ts / src/session.ts。
  *  host → web : init / rows / cell
@@ -13,11 +13,22 @@
   const LEFT_W = 26; // ch：序号 8 + 偏移 14 + 状态 4
   const ERR_VIEW = 'ERR';
   const ORDER_VIEW = 'ORDER';
+  /** 界面文字（随 init 消息由扩展端按 VS Code 的显示语言发来） */
+  let strings = {};
+  function S(key, args) {
+    const text = strings[key] !== undefined ? strings[key] : key;
+    return text.replace(/\{(\w+)\}/g, (m, k) => (args && k in args ? String(args[k]) : m));
+  }
   const ERR_COLUMNS = [
-    { name: '偏移', pic: '', start: 0, width: 12, kind: 'field', type: 'alnum' },
-    { name: '跳过字节', pic: '', start: 0, width: 10, kind: 'field', type: 'alnum' },
-    { name: '原因', pic: '', start: 0, width: 110, kind: 'field', type: 'alnum' },
+    { name: 'offset', pic: '', start: 0, width: 12, kind: 'field', type: 'alnum' },
+    { name: 'skipped', pic: '', start: 0, width: 10, kind: 'field', type: 'alnum' },
+    { name: 'reason', pic: '', start: 0, width: 110, kind: 'field', type: 'alnum' },
   ];
+  function localizeErrColumns() {
+    ERR_COLUMNS[0].name = S('offset');
+    ERR_COLUMNS[1].name = S('skipped');
+    ERR_COLUMNS[2].name = S('reason');
+  }
 
   const state = {
     init: null,
@@ -35,7 +46,7 @@
     '<div id="toolbar"></div>',
     '<div id="tabs"></div>',
     '<div id="banner"></div>',
-    '<div id="cellbar"><span class="hint">点击单元格查看字段值和原始字节</span></div>',
+    '<div id="cellbar"></div>',
     '<div id="scroller"><div id="inner"><div id="hdr"></div><div id="rows"></div></div></div>',
   ].join('');
   const $toolbar = document.getElementById('toolbar');
@@ -135,12 +146,12 @@
     $toolbar.innerHTML =
       `<span class="file">${esc(d.fileName)}</span>` +
       (d.version ? `<span class="meta">v${esc(d.version)}</span>` : '') +
-      `<span class="meta">${sizeKB} · ${d.total - d.errorCount} 条记录` +
-      (d.errorCount ? ` · <span class="st-err">${d.errorCount} 处错误</span>` : '') +
+      `<span class="meta">${sizeKB} · ${esc(S('records', { n: d.total - d.errorCount }))}` +
+      (d.errorCount ? ` · <span class="st-err">${esc(S('errors', { n: d.errorCount }))}</span>` : '') +
       `</span><span class="spacer"></span>` +
-      `<label title="没有 copybook 时，自动识别正文中的 COMP-3 并显示为 [数值]（启发式，可能误判）"><input type="checkbox" id="autoPacked" ${d.autoPacked ? 'checked' : ''}>自动识别 COMP-3</label>` +
-      `<label title="按字段名隐藏列（设置：rdwViewer.hiddenFieldPattern）"><input type="checkbox" id="hideFiller" ${state.hideFiller ? 'checked' : ''}>隐藏 FILLER 列</label>` +
-      `<label>编码 <select id="enc">${d.encodings
+      `<label title="${esc(S('autoPackedTitle'))}"><input type="checkbox" id="autoPacked" ${d.autoPacked ? 'checked' : ''}>${esc(S('autoPacked'))}</label>` +
+      `<label title="${esc(S('hideFillerTitle'))}"><input type="checkbox" id="hideFiller" ${state.hideFiller ? 'checked' : ''}>${esc(S('hideFiller'))}</label>` +
+      `<label>${esc(S('encoding'))} <select id="enc">${d.encodings
         .map((e) => `<option value="${e}" ${e === d.encoding ? 'selected' : ''}>${e}</option>`)
         .join('')}</select></label>`;
     document.getElementById('hideFiller').onchange = (ev) => {
@@ -160,17 +171,17 @@
     const parts = d.groups.map((g) => {
       const cb = g.copybookName
         ? `<span class="cb" title="${esc(g.copybookName)}">✔ ${esc(g.copybookName)}</span>`
-        : '<span class="nocb">未指定copybook</span>';
+        : `<span class="nocb">${esc(S('noCopybook'))}</span>`;
       const val = g.value !== null ? ` <span class="dv" title="${esc(g.discLabel || '')}">= ${esc(g.value)}</span>` : '';
-      return `<button class="tab ${state.view === g.key ? 'active' : ''}" data-v="${esc(g.key)}">${g.length} 字节${val} <small>× ${g.count}</small>${cb}</button>`;
+      return `<button class="tab ${state.view === g.key ? 'active' : ''}" data-v="${esc(g.key)}">${esc(S('bytes', { n: g.length }))}${val} <small>× ${g.count}</small>${cb}</button>`;
     });
     if (d.errorCount) {
       parts.push(
-        `<button class="tab errtab ${state.view === ERR_VIEW ? 'active' : ''}" data-v="${ERR_VIEW}">错误 <small>× ${d.errorCount}</small></button>`
+        `<button class="tab errtab ${state.view === ERR_VIEW ? 'active' : ''}" data-v="${ERR_VIEW}">${esc(S('errorTab'))} <small>× ${d.errorCount}</small></button>`
       );
     }
     parts.push(
-      `<button class="tab ordertab ${state.view === ORDER_VIEW ? 'active' : ''}" data-v="${ORDER_VIEW}" title="按文件原始顺序混排，copybook 切换处插入表头">文件顺序</button>`
+      `<button class="tab ordertab ${state.view === ORDER_VIEW ? 'active' : ''}" data-v="${ORDER_VIEW}" title="${esc(S('orderTabTitle'))}">${esc(S('orderTab'))}</button>`
     );
     $tabs.innerHTML = parts.join('');
     $tabs.querySelectorAll('.tab').forEach((b) => {
@@ -193,25 +204,29 @@
     if (state.view === ORDER_VIEW) {
       const unmapped = d.groups.filter((g) => !g.copybookName).length;
       level = unmapped || d.errorCount ? 'warn' : 'info';
-      text = `文件顺序视图：共 ${d.groups.length} 组` + (unmapped ? `，其中 ${unmapped} 组尚未指定 copybook（在对应标签页中选择）` : '') + (d.errorCount ? `，${d.errorCount} 处错误` : '') + '。';
+      text =
+        S('orderBanner', { n: d.groups.length }) +
+        (unmapped ? S('orderUnmapped', { n: unmapped }) : '') +
+        (d.errorCount ? S('orderErrors', { n: d.errorCount }) : '') +
+        S('period');
     } else if (state.view === ERR_VIEW) {
       level = 'error';
-      text = `共 ${d.errorCount} 处 RDW 错误。偏移为文件内的字节位置（十六进制）。`;
+      text = S('errBanner', { n: d.errorCount });
     } else {
       const g = groupOf(state.view);
       level = g.banner.level;
       text = g.banner.text;
-      buttons = `<button class="primary" data-act="choose">${g.copybookName ? '更换 copybook…' : '选择 copybook…'}</button>`;
+      buttons = `<button class="primary" data-act="choose">${esc(S(g.copybookName ? 'change' : 'choose'))}</button>`;
       if (g.copybookName) {
-        buttons += '<button data-act="detail" title="在编辑器中列出每个字段的位置和长度">解析详情</button>';
+        buttons += `<button data-act="detail" title="${esc(S('detailTitle'))}">${esc(S('detail'))}</button>`;
       }
       if (g.copybookName || g.banner.level === 'error') {
-        buttons += '<button data-act="clear">清除</button>';
+        buttons += `<button data-act="clear">${esc(S('clear'))}</button>`;
       }
       buttons +=
         g.value === null
-          ? '<button data-act="disc" title="同一长度的记录按某个字段的值使用不同的 copybook">按字段值区分…</button>'
-          : '<button data-act="undisc">取消区分</button>';
+          ? `<button data-act="disc" title="${esc(S('discTitle'))}">${esc(S('disc'))}</button>`
+          : `<button data-act="undisc">${esc(S('undisc'))}</button>`;
     }
     $banner.className = level;
     $banner.innerHTML = `<span class="text">${esc(text)}</span>${buttons}`;
@@ -232,7 +247,7 @@
   }
 
   function clearCellbar() {
-    $cellbar.innerHTML = '<span class="hint">点击单元格查看字段值和原始字节</span>';
+    $cellbar.innerHTML = `<span class="hint">${esc(S('cellHint'))}</span>`;
   }
 
   /**
@@ -256,14 +271,14 @@
   }
   function segHtml(s) {
     return esc(s)
-      .replace(/\uE000([^\uE001]*)\uE001/g, '<span class="pk" title="自动识别的 COMP-3（可能误判）">[$1]</span>')
+      .replace(/\uE000([^\uE001]*)\uE001/g, `<span class="pk" title="${esc(S('packedTitle'))}">[$1]</span>`)
       .replace(/\uE002([^\uE003]*)\uE003/g, '<span class="raw">‹$1›</span>');
   }
 
   /* ---------- 表头 ---------- */
   function headerRowHtml(key, k, isAbs, top) {
     const { vis } = visibleCols(key);
-    const label = key === ERR_VIEW ? '#' : ['項目名', '属 性', '相 対 位 置'][k];
+    const label = key === ERR_VIEW ? '#' : [S('hdrName'), S('hdrPic'), S('hdrPos')][k];
     let html = `<div class="row" ${isAbs ? `data-top="${top}"` : ''}>`;
     html += `<div class="c l lh hd">${label}</div>`;
     for (const { col, px } of vis) {
@@ -301,7 +316,7 @@
     const status = isErr ? '<span class="st-err">✖</span>' : warn ? '<span class="st-warn">⚠</span>' : '';
     let html = `<div class="row ${isErr ? 'err' : ''}" data-top="${top}">`;
     html += `<div class="c l l0">${row.e + 1}</div>`;
-    html += `<div class="c l l1" title="偏移 ${row.o}">0x${row.o.toString(16).toUpperCase().padStart(8, '0')}</div>`;
+    html += `<div class="c l l1" title="${esc(S('offset'))} ${row.o}">0x${row.o.toString(16).toUpperCase().padStart(8, '0')}</div>`;
     html += `<div class="c l l2">${status}</div>`;
     const warnSet = isErr ? null : new Set(row.w);
     for (const { i: ci, col, px } of vis) {
@@ -382,7 +397,7 @@
     renderBanner();
     renderStaticHeader();
     if (n === 0) {
-      $rows.innerHTML = '<div id="empty">没有可显示的记录</div>';
+      $rows.innerHTML = `<div id="empty">${esc(S('empty'))}</div>`;
     } else {
       $scroller.scrollTop = st;
       draw();
@@ -419,6 +434,8 @@
     switch (msg.type) {
       case 'init': {
         refreshMetrics();
+        strings = msg.strings || {};
+        localizeErrColumns();
         state.init = msg;
         state.gen = msg.gen;
         state.cache.clear();
@@ -451,7 +468,7 @@
         $cellbar.innerHTML =
           `<span class="name" title="${esc(c.name)}">${esc(c.name)}</span>` +
           `<span class="value ${c.warn ? 'warn' : ''}">${esc(c.text)}</span>` +
-          `<span class="hint">${esc(c.pic)} · 位置 ${c.start} · ${c.len} 字节</span>` +
+          `<span class="hint">${esc(S('cellMeta', { pic: c.pic, pos: c.start, len: c.len }))}</span>` +
           `<span class="hex" title="${esc(c.hex)}">${esc(c.hex)}</span>`;
         break;
       }

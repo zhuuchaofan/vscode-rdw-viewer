@@ -1,0 +1,11 @@
+{
+  "displayName": "RDW Viewer",
+  "description": "查看带 RDW（前后 4 字节小端序）的可变长记录文件，支持 COBOL copybook 按字段显示、COMP-3 解码",
+  "command.open": "用 RDW Viewer 打开",
+  "config.title": "RDW Viewer",
+  "config.encoding": "记录正文的默认字符编码（WHATWG 编码名，如 shift_jis、utf-8、euc-jp、gbk）。",
+  "config.lengthMismatch": "记录长度与 copybook 总长度不一致时：lenient=尽量拆分并标出差异；strict=不拆分，只显示整条正文。",
+  "config.binaryEndian": "COMP / BINARY（二进制）字段的字节序。COMP-3（packed decimal）不受影响。",
+  "config.autoDetectPacked": "没有指定 copybook 时，自动识别正文中的 COMP-3（packed decimal）并显示为 [数值]。这是启发式猜测，可能误判。",
+  "config.hiddenFieldPattern": "「隐藏 FILLER 列」开启时，字段名匹配该正则（不区分大小写）的列会被隐藏，例如 FILLER|COMMA。"
+}

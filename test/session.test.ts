@@ -158,9 +158,9 @@ test('COMP-3 / COMP 字段解码成数值，非法内容回退十六进制并标
        05 CNT   PIC S9(004) COMP.
   `); // 3 + 1 + 9 + 5 + 2 = 20
   const row = (id: string, amt: string, cnt: string) =>
-    rec(Buffer.concat([hexBytes(id), ascii('1FVAO-M006'), hexBytes(amt), hexBytes(cnt)]));
+    rec(Buffer.concat([hexBytes(id), ascii('1ABCD-0001'), hexBytes(amt), hexBytes(cnt)]));
   const file = Buffer.concat([
-    row('11 80 0C', '00 12 34 56 7C', '00 7B'),
+    row('10 10 0C', '00 12 34 56 7C', '00 7B'),
     row('00 00 0D', '00 00 00 00 5D', 'FF FF'),
     row('00 00 0F', '00 00 00 00 50', '00 01'), // AMT 符号位为 0 → 非法
   ]);
@@ -170,7 +170,7 @@ test('COMP-3 / COMP 字段解码成数值，非法内容回退十六进制并标
   assert.equal(g.banner.level, 'info');
   assert.deepEqual(g.columns.map((c) => c.usage), ['COMP-3', 'DISPLAY', 'DISPLAY', 'COMP-3', 'COMP']);
   const rows = s.getRows('L20', 0, 3) as RecRow[];
-  assert.deepEqual(rows[0].c, ['+11800', '1', 'FVAO-M006', '+12345.67', '+123']);
+  assert.deepEqual(rows[0].c, ['+10100', '1', 'ABCD-0001', '+12345.67', '+123']);
   assert.deepEqual(rows[0].w, []);
   assert.deepEqual([rows[1].c[0], rows[1].c[3], rows[1].c[4]], ['-0', '-0.05', '-1']);
   assert.equal(rows[2].c[0], '+0');
@@ -203,14 +203,14 @@ test('多个 01：按记录长度自动选用对应定义，并在提示条中�
 });
 
 test('没有 copybook：正文自动识别 COMP-3；关闭开关后按原样解码', () => {
-  const body = Buffer.concat([hexBytes('11 80 0C'), ascii('1FVAO-M006'), hexBytes('22 50 93 0C')]);
+  const body = Buffer.concat([hexBytes('10 10 0C'), ascii('1ABCD-0001'), hexBytes('22 41 07 0C')]);
   const s = session(rec(body));
   const len = body.length;
   assert.equal(s.init().autoPacked, true);
   const row = s.getRows(`L${len}`, 0, 1)[0] as RecRow;
-  assert.equal(row.c[0], '+118001FVAO-M006+2250930');
+  assert.equal(row.c[0], '+101001ABCD-0001+2241070');
   assert.deepEqual(row.w, []);
-  assert.equal(s.cellInfo(`L${len}`, 0, 0)!.text, '[+11800]1FVAO-M006[+2250930]');
+  assert.equal(s.cellInfo(`L${len}`, 0, 0)!.text, '[+10100]1ABCD-0001[+2241070]');
 
   s.setAutoPacked(false);
   const off = s.getRows(`L${len}`, 0, 1)[0] as RecRow;
@@ -218,44 +218,44 @@ test('没有 copybook：正文自动识别 COMP-3；关闭开关后按原样解�
   // 指定 copybook 后不再自动识别
   s.setAutoPacked(true);
   s.setCopybook(len, { name: 'x.cpy', copybook: parseCopybook(`01 R. 05 A PIC S9(5) COMP-3. 05 B PIC X(10). 05 C PIC S9(7) COMP-3.`) });
-  assert.deepEqual((s.getRows(`L${len}`, 0, 1)[0] as RecRow).c, ['+11800', '1FVAO-M006', '+2250930']);
+  assert.deepEqual((s.getRows(`L${len}`, 0, 1)[0] as RecRow).c, ['+10100', '1ABCD-0001', '+2241070']);
 });
 
 test('判别字段（COMP-3）：同一长度按字段值分组，各自使用不同 copybook', () => {
   // 长度都是 8：前 3 字节为 COMP-3 的记录类型
-  const hdr = (s: string) => rec(Buffer.concat([hexBytes('11 80 0C'), ascii(s)]));
-  const dat = (s: string) => rec(Buffer.concat([hexBytes('11 85 0C'), ascii(s)]));
+  const hdr = (s: string) => rec(Buffer.concat([hexBytes('10 10 0C'), ascii(s)]));
+  const dat = (s: string) => rec(Buffer.concat([hexBytes('10 20 0C'), ascii(s)]));
   const file = Buffer.concat([hdr('HEAD1'), dat('A1234'), dat('B5678'), rec(Buffer.concat([hexBytes('99 99 9C'), ascii('ZZZZZ')]))]);
   const s = session(file);
   assert.deepEqual(s.groups.map((g) => g.key), ['L8']);
 
   const d = { start: 1, length: 3, type: 'comp3' as const };
   assert.deepEqual(s.discriminatorValues(8, d), [
-    { value: '+11850', count: 2 },
-    { value: '+11800', count: 1 },
+    { value: '+10200', count: 2 },
+    { value: '+10100', count: 1 },
     { value: '+99999', count: 1 },
   ]);
 
   s.setDiscriminator(8, d);
   const cbHdr = parseCopybook('01 H. 05 TYP PIC S9(5) COMP-3. 05 TITLE PIC X(5).');
   const cbDat = parseCopybook('01 D. 05 TYP PIC S9(5) COMP-3. 05 KIND PIC X(1). 05 NUM PIC 9(4).');
-  s.setCopybook(8, { name: 'h.cpy', copybook: cbHdr }, undefined, '+11800');
-  s.setCopybook(8, { name: 'd.cpy', copybook: cbDat }, undefined, '+11850');
+  s.setCopybook(8, { name: 'h.cpy', copybook: cbHdr }, undefined, '+10100');
+  s.setCopybook(8, { name: 'd.cpy', copybook: cbDat }, undefined, '+10200');
 
   const init = s.init();
   assert.deepEqual(init.groups.map((g) => [g.value, g.count, g.copybookName]), [
-    ['+11800', 1, 'h.cpy'],
-    ['+11850', 2, 'd.cpy'],
+    ['+10100', 1, 'h.cpy'],
+    ['+10200', 2, 'd.cpy'],
     ['+99999', 1, null],
   ]);
-  assert.match(init.groups[0].banner.text, /位置 1~3（COMP-3） = \+11800/);
+  assert.match(init.groups[0].banner.text, /位置 1~3（COMP-3） = \+10100/);
   // 未匹配的值：整条正文，提示选择 copybook
   assert.equal(init.groups[2].columns[0].kind, 'body');
 
   const datKey = init.groups[1].key;
   assert.deepEqual((s.getRows(datKey, 0, 2) as RecRow[]).map((r) => r.c), [
-    ['+11850', 'A', '1234'],
-    ['+11850', 'B', '5678'],
+    ['+10200', 'A', '1234'],
+    ['+10200', 'B', '5678'],
   ]);
   // 文件顺序视图：分组切换处插入表头
   const order = s.getRows('ORDER', 0, s.count('ORDER')).map((r) => r.t);

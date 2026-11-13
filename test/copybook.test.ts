@@ -93,12 +93,12 @@ test('V 之后的位数记为小数位数；字段带 USAGE', () => {
 test('固定格式：有一行不规整时，其余带序号的行和 73~80 列标识仍被正确处理', () => {
   const pad = (s: string) => s.padEnd(72, ' ');
   const lines = [
-    pad('000100*    取引ファイル') + 'CKLS1020',
-    pad('000200 01  CKLS-REC.') + 'CKLS1020',
-    pad('000300     05  KEY-ID      PIC X(10).') + 'CKLS1020',
+    pad('000100*    サンプルファイル') + 'SAMPLE01',
+    pad('000200 01  SMPL-REC.') + 'SAMPLE01',
+    pad('000300     05  KEY-ID      PIC X(10).') + 'SAMPLE01',
     '\t05  ODD-LINE   PIC X(5).', // Tab 缩进，不符合固定格式
-    pad('000500     05  AMT         PIC S9(7) COMP-3.') + 'CKLS1020',
-    pad('000600     05  FILLER      PIC X(3).') + 'CKLS1020',
+    pad('000500     05  AMT         PIC S9(7) COMP-3.') + 'SAMPLE01',
+    pad('000600     05  FILLER      PIC X(3).') + 'SAMPLE01',
   ];
   const cb = parseCopybook(lines.join('\r\n'));
   assert.deepEqual(cb.fields.map((f) => [f.name, f.offset, f.length]), [

@@ -6,3 +6,6 @@ tsconfig.json
 node_modules/**
 !media/**
 out/test/**
+PUBLISHING.md
+images/*.svg
+.gitignore
