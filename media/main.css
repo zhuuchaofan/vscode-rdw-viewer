@@ -1,0 +1,186 @@
+:root {
+  --row-h: 20px;
+  --warn: #d98c1f;
+  --err: #e5534b;
+  --ok: #3fb950;
+}
+
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size, 13px);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ---------- 工具栏 / 标签页 ---------- */
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  flex-wrap: wrap;
+}
+#toolbar .file { font-weight: 600; }
+#toolbar .meta { opacity: 0.7; }
+#toolbar .spacer { flex: 1; }
+#toolbar label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+select, button {
+  font: inherit;
+  color: var(--vscode-dropdown-foreground, inherit);
+  background: var(--vscode-dropdown-background, transparent);
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+  border-radius: 2px;
+  padding: 1px 6px;
+}
+button { cursor: pointer; }
+button.primary {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border-color: transparent;
+}
+button.primary:hover { background: var(--vscode-button-hoverBackground); }
+
+#tabs {
+  display: flex;
+  gap: 2px;
+  padding: 4px 10px 0;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.tab {
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  background: transparent;
+  padding: 3px 10px;
+  opacity: 0.75;
+}
+.tab:hover { opacity: 1; }
+.tab.active {
+  opacity: 1;
+  background: var(--vscode-editor-background);
+  border-color: var(--vscode-panel-border);
+  margin-bottom: -1px;
+  border-bottom: 1px solid var(--vscode-editor-background);
+}
+.tab small { opacity: 0.7; }
+.tab .cb { color: var(--ok); margin-left: 4px; }
+.tab .nocb { color: var(--warn); margin-left: 4px; }
+.tab.errtab { color: var(--err); }
+.tab.ordertab { margin-left: auto; }
+
+/* ---------- 提示条 ---------- */
+#banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-left: 3px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background, rgba(128,128,128,0.08));
+}
+#banner.info { border-left-color: var(--ok); }
+#banner.warn { border-left-color: var(--warn); }
+#banner.error { border-left-color: var(--err); }
+#banner .text { flex: 1; }
+#banner:empty { display: none; }
+
+/* ---------- 单元格信息条（对应 TF-LINDA 左上角） ---------- */
+#cellbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  font-family: var(--vscode-editor-font-family, monospace);
+  min-height: 20px;
+}
+#cellbar .name {
+  min-width: 18ch;
+  padding: 0 6px;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-panel-border);
+}
+#cellbar .value {
+  flex: 1;
+  min-width: 10ch;
+  padding: 0 6px;
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-panel-border);
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#cellbar .value.warn { border-color: var(--warn); }
+#cellbar .hex { opacity: 0.8; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#cellbar .hint { opacity: 0.5; }
+
+/* ---------- 表格 ---------- */
+#scroller {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, "MS Gothic", monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+}
+#inner { position: relative; }
+#hdr {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+}
+#rows { position: relative; }
+
+.row {
+  display: flex;
+  height: var(--row-h);
+  line-height: var(--row-h);
+  white-space: pre;
+}
+#rows .row { position: absolute; left: 0; }
+
+.c {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  padding: 0 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-right: 1px solid var(--vscode-panel-border);
+  border-bottom: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editor-background);
+}
+/* 左侧固定列：序号 / 偏移 / 状态 */
+.l { position: sticky; z-index: 2; background: var(--vscode-sideBar-background, var(--vscode-editor-background)); opacity: 1; }
+.l0 { left: 0; width: 8ch; text-align: right; }
+.l1 { left: 8ch; width: 14ch; opacity: 0.7; }
+.l2 { left: 22ch; width: 4ch; text-align: center; }
+.lh { left: 0; width: 26ch; font-weight: 600; text-align: right; }
+
+.hd { background: var(--vscode-editorGroupHeader-tabsBackground, rgba(128,128,128,0.15)); font-weight: 600; }
+.hd.pic { font-weight: normal; opacity: 0.9; }
+.hd.pos { font-weight: normal; opacity: 0.7; }
+.hd.partial, .hd.missing, .hd.extra { color: var(--warn); }
+
+.c.f { cursor: cell; }
+.c.f:hover { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+.c.f.w { background: rgba(217, 140, 31, 0.22); color: var(--vscode-editor-foreground); }
+.c.f.sel { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; z-index: 1; }
+.c.f.num { text-align: right; }
+
+.row.err .c { color: var(--err); background: rgba(229, 83, 75, 0.1); }
+.row.err .l { background: rgba(229, 83, 75, 0.2); }
+.st-warn { color: var(--warn); }
+.st-err { color: var(--err); }
+
+#empty { padding: 24px; opacity: 0.7; }
