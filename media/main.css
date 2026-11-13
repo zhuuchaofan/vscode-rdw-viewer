@@ -76,6 +76,7 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
   border-bottom: 1px solid var(--vscode-editor-background);
 }
 .tab small { opacity: 0.7; }
+.tab .dv { color: var(--vscode-textLink-foreground, #3794ff); font-weight: 600; }
 .tab .cb { color: var(--ok); margin-left: 4px; }
 .tab .nocb { color: var(--warn); margin-left: 4px; }
 .tab.errtab { color: var(--err); }

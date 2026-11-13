@@ -161,7 +161,8 @@
       const cb = g.copybookName
         ? `<span class="cb" title="${esc(g.copybookName)}">✔ ${esc(g.copybookName)}</span>`
         : '<span class="nocb">未指定copybook</span>';
-      return `<button class="tab ${state.view === g.key ? 'active' : ''}" data-v="${g.key}">${g.length} 字节 <small>× ${g.count}</small>${cb}</button>`;
+      const val = g.value !== null ? ` <span class="dv" title="${esc(g.discLabel || '')}">= ${esc(g.value)}</span>` : '';
+      return `<button class="tab ${state.view === g.key ? 'active' : ''}" data-v="${esc(g.key)}">${g.length} 字节${val} <small>× ${g.count}</small>${cb}</button>`;
     });
     if (d.errorCount) {
       parts.push(
@@ -192,7 +193,7 @@
     if (state.view === ORDER_VIEW) {
       const unmapped = d.groups.filter((g) => !g.copybookName).length;
       level = unmapped || d.errorCount ? 'warn' : 'info';
-      text = `文件顺序视图：共 ${d.groups.length} 种长度` + (unmapped ? `，其中 ${unmapped} 种尚未指定 copybook（在对应标签页中选择）` : '') + (d.errorCount ? `，${d.errorCount} 处错误` : '') + '。';
+      text = `文件顺序视图：共 ${d.groups.length} 组` + (unmapped ? `，其中 ${unmapped} 组尚未指定 copybook（在对应标签页中选择）` : '') + (d.errorCount ? `，${d.errorCount} 处错误` : '') + '。';
     } else if (state.view === ERR_VIEW) {
       level = 'error';
       text = `共 ${d.errorCount} 处 RDW 错误。偏移为文件内的字节位置（十六进制）。`;
@@ -207,6 +208,10 @@
       if (g.copybookName || g.banner.level === 'error') {
         buttons += '<button data-act="clear">清除</button>';
       }
+      buttons +=
+        g.value === null
+          ? '<button data-act="disc" title="同一长度的记录按某个字段的值使用不同的 copybook">按字段值区分…</button>'
+          : '<button data-act="undisc">取消区分</button>';
     }
     $banner.className = level;
     $banner.innerHTML = `<span class="text">${esc(text)}</span>${buttons}`;
@@ -214,8 +219,14 @@
     $banner.querySelectorAll('button').forEach((b) => {
       b.onclick = () => {
         if (!g) return;
-        const type = { choose: 'chooseCopybook', clear: 'clearCopybook', detail: 'showLayout' }[b.dataset.act];
-        vscode.postMessage({ type, length: g.length });
+        const type = {
+          choose: 'chooseCopybook',
+          clear: 'clearCopybook',
+          detail: 'showLayout',
+          disc: 'configureDisc',
+          undisc: 'clearDisc',
+        }[b.dataset.act];
+        vscode.postMessage({ type, g: g.key });
       };
     });
   }
