@@ -57,7 +57,25 @@
     return state.init.groups.find((g) => g.key === key);
   }
 
-  /** 返回某个分组/错误视图的可见列信息：[{i, col}]、总宽度(ch) */
+  /* 列宽以 px 为单位：宽度取「host 按字节数估算的 ch 宽」和「表头文字在实际字体下的测量宽度」中较大者，
+   * 这样全角表头（レコードID 等）不会因字体回退而被截断或与数据列错位。 */
+  const measureCtx = document.createElement('canvas').getContext('2d');
+  let chPx = 8;
+  function refreshMetrics() {
+    const cs = getComputedStyle($scroller);
+    measureCtx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    chPx = measureCtx.measureText('0').width || 8;
+  }
+  function textPx(s) {
+    return measureCtx.measureText(String(s)).width;
+  }
+  function colPx(col) {
+    const header = Math.max(textPx(col.name) * 1.05, textPx(col.pic) , textPx(col.start || '')) + 14;
+    return Math.ceil(Math.max(col.width * chPx, header));
+  }
+  const isNumeric = (col) => col.type === 'num' || col.type === 'bin';
+
+  /** 返回某个分组/错误视图的可见列信息：[{i, col, px}]、总宽度(px) */
   const colCache = new Map();
   function visibleCols(key) {
     const hit = colCache.get(key + '|' + state.hideFiller);
@@ -76,8 +94,9 @@
       if (state.hideFiller && hideRegex && key !== ERR_VIEW && hideRegex.test(col.name)) {
         return;
       }
-      vis.push({ i, col });
-      total += col.width;
+      const px = colPx(col);
+      vis.push({ i, col, px });
+      total += px;
     });
     const res = { vis, total };
     colCache.set(key + '|' + state.hideFiller, res);
@@ -103,9 +122,9 @@
     if (state.view === ORDER_VIEW) {
       let w = visibleCols(ERR_VIEW).total;
       d.groups.forEach((g) => (w = Math.max(w, visibleCols(g.key).total)));
-      return LEFT_W + w;
+      return `calc(${LEFT_W}ch + ${w}px)`;
     }
-    return LEFT_W + visibleCols(state.view).total;
+    return `calc(${LEFT_W}ch + ${visibleCols(state.view).total}px)`;
   }
 
   /* ---------- 渲染：工具栏 / 标签页 / 提示条 ---------- */
@@ -199,12 +218,12 @@
   function headerRowHtml(key, k, isAbs, top) {
     const { vis } = visibleCols(key);
     const label = key === ERR_VIEW ? '#' : ['項目名', '属 性', '相 対 位 置'][k];
-    let html = `<div class="row" ${isAbs ? `style="top:${top}px;width:${viewWidth()}ch"` : ''}>`;
+    let html = `<div class="row" ${isAbs ? `style="top:${top}px;width:${viewWidth()}"` : ''}>`;
     html += `<div class="c l lh hd">${label}</div>`;
-    for (const { col } of vis) {
-      const cls = k === 0 ? '' : k === 1 ? ' pic' : ' pos';
+    for (const { col, px } of vis) {
+      const cls = (k === 0 ? '' : k === 1 ? ' pic' : ' pos') + (isNumeric(col) ? ' num' : '');
       const text = k === 0 ? col.name : k === 1 ? col.pic : col.start || '';
-      html += `<div class="c hd${cls} ${col.kind}" style="width:${col.width}ch" title="${esc(text)}">${esc(text)}</div>`;
+      html += `<div class="c hd${cls} ${col.kind}" style="width:${px}px" title="${esc(text)}">${esc(text)}</div>`;
     }
     return html + '</div>';
   }
@@ -216,7 +235,7 @@
       return;
     }
     $hdr.style.display = '';
-    $hdr.style.width = viewWidth() + 'ch';
+    $hdr.style.width = viewWidth();
     const rows = [];
     for (let k = 0; k < hdrRowsOf(state.view); k++) rows.push(headerRowHtml(state.view, k, false));
     $hdr.innerHTML = rows.join('');
@@ -234,18 +253,18 @@
     const { vis } = visibleCols(key);
     const warn = !isErr && row.w.length > 0;
     const status = isErr ? '<span class="st-err">✖</span>' : warn ? '<span class="st-warn">⚠</span>' : '';
-    let html = `<div class="row ${isErr ? 'err' : ''}" style="top:${top}px;width:${width}ch">`;
+    let html = `<div class="row ${isErr ? 'err' : ''}" style="top:${top}px;width:${width}">`;
     html += `<div class="c l l0">${row.e + 1}</div>`;
     html += `<div class="c l l1" title="偏移 ${row.o}">0x${row.o.toString(16).toUpperCase().padStart(8, '0')}</div>`;
     html += `<div class="c l l2">${status}</div>`;
     const warnSet = isErr ? null : new Set(row.w);
-    for (const { i: ci, col } of vis) {
+    for (const { i: ci, col, px } of vis) {
       const text = row.c[ci];
       const isW = warnSet && warnSet.has(ci);
       const sel =
         state.selected && state.selected.view === view && state.selected.row === i && state.selected.col === ci ? ' sel' : '';
-      const num = col.type === 'num' ? ' num' : '';
-      html += `<div class="c f${isW ? ' w' : ''}${sel}${num}" style="width:${col.width}ch" data-r="${i}" data-c="${ci}" title="${esc(text)}">${esc(text)}</div>`;
+      const num = isNumeric(col) && col.kind !== 'missing' ? ' num' : '';
+      html += `<div class="c f${isW ? ' w' : ''}${sel}${num}" style="width:${px}px" data-r="${i}" data-c="${ci}" title="${esc(text)}">${esc(text)}</div>`;
     }
     return html + '</div>';
   }
@@ -309,7 +328,7 @@
       $scroller.scrollLeft = 0;
     }
     const n = viewCount(state.view);
-    $inner.style.width = viewWidth() + 'ch';
+    $inner.style.width = viewWidth();
     $rows.style.height = n * ROW_H + 'px';
     renderTabs();
     renderBanner();
@@ -323,6 +342,7 @@
   }
 
   /* ---------- 事件 ---------- */
+  refreshMetrics();
   $scroller.addEventListener('scroll', scheduleDraw, { passive: true });
   window.addEventListener('resize', scheduleDraw);
 
@@ -350,6 +370,7 @@
     const msg = ev.data;
     switch (msg.type) {
       case 'init': {
+        refreshMetrics();
         state.init = msg;
         state.gen = msg.gen;
         state.cache.clear();

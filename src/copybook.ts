@@ -24,6 +24,10 @@ export interface CopyField {
   length: number;
   type: FieldType;
   signed: boolean;
+  /** USAGE（DISPLAY / COMP / COMP-3 …） */
+  usage: string;
+  /** 小数位数（V 之后的位数） */
+  scale: number;
 }
 
 export interface Copybook {
@@ -120,6 +124,7 @@ function splitStatements(src: string): string[] {
 export interface PicInfo {
   length: number;
   digits: number;
+  scale: number;
   type: FieldType;
   signed: boolean;
 }
@@ -130,14 +135,23 @@ export function picInfo(pic: string, usage: string, signSeparate: boolean): PicI
   let len = 0;
   let digits = 0;
   let numeric = true;
+  let scale = 0;
+  let afterV = false;
   const re = /(CR|DB|[A-Z0-9.,+\-*$\/])(?:\((\d+)\))?/g;
   for (const m of up.matchAll(re)) {
     const sym = m[1];
     const n = m[2] ? parseInt(m[2], 10) : 1;
-    if (sym === 'S' || sym === 'V' || sym === 'P') {
+    if (sym === 'V') {
+      afterV = true;
+      continue;
+    }
+    if (sym === 'S' || sym === 'P') {
       continue;
     }
     len += n * (sym === 'CR' || sym === 'DB' ? 2 : 1);
+    if (afterV) {
+      scale += n;
+    }
     if (sym === '9') {
       digits += n;
     } else {
@@ -150,18 +164,19 @@ export function picInfo(pic: string, usage: string, signSeparate: boolean): PicI
     case 'COMP-4':
     case 'COMP-5':
     case 'BINARY':
-      return { length: digits <= 4 ? 2 : digits <= 9 ? 4 : 8, digits, type: 'bin', signed };
+      return { length: digits <= 4 ? 2 : digits <= 9 ? 4 : 8, digits, scale, type: 'bin', signed };
     case 'COMP-3':
     case 'PACKED-DECIMAL':
-      return { length: Math.ceil((digits + 1) / 2), digits, type: 'bin', signed };
+      return { length: Math.ceil((digits + 1) / 2), digits, scale, type: 'bin', signed };
     case 'COMP-1':
-      return { length: 4, digits, type: 'bin', signed };
+      return { length: 4, digits, scale, type: 'bin', signed };
     case 'COMP-2':
-      return { length: 8, digits, type: 'bin', signed };
+      return { length: 8, digits, scale, type: 'bin', signed };
     default:
       return {
         length: len + (signed && signSeparate ? 1 : 0),
         digits,
+        scale,
         type: numeric ? 'num' : 'alnum',
         signed,
       };
@@ -269,6 +284,8 @@ function flatten(node: Node, offset: number, suffix: string, out: CopyField[], w
         length: p.length,
         type: p.type,
         signed: p.signed,
+        usage: node.usage,
+        scale: p.scale,
       });
       off += p.length;
     } else {

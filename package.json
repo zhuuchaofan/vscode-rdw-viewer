@@ -53,6 +53,15 @@
           "default": "lenient",
           "description": "记录长度与 copybook 总长度不一致时：lenient=尽量拆分并标出差异；strict=不拆分，只显示整条正文。"
         },
+        "rdwViewer.binaryEndian": {
+          "type": "string",
+          "enum": [
+            "big",
+            "little"
+          ],
+          "default": "big",
+          "description": "COMP / BINARY（二进制）字段的字节序。COMP-3（packed decimal）不受影响。"
+        },
         "rdwViewer.hiddenFieldPattern": {
           "type": "string",
           "default": "^FILLER$",

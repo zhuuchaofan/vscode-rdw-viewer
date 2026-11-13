@@ -93,6 +93,7 @@ function config() {
     encoding: c.get<string>('encoding', 'shift_jis'),
     mismatch: c.get<MismatchMode>('lengthMismatch', 'lenient'),
     hiddenPattern: c.get<string>('hiddenFieldPattern', '^FILLER$'),
+    binaryEndian: c.get<'big' | 'little'>('binaryEndian', 'big'),
   };
 }
 
@@ -162,7 +163,7 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
 
   const cfg = config();
   const fileName = path.basename(uri.fsPath);
-  const session = new RdwSession(bytes, fileName, { encoding: cfg.encoding, mismatch: cfg.mismatch });
+  const session = new RdwSession(bytes, fileName, { encoding: cfg.encoding, mismatch: cfg.mismatch, binaryEndian: cfg.binaryEndian });
   const folder = vscode.workspace.getWorkspaceFolder(uri) ?? vscode.workspace.workspaceFolders?.[0];
   const store = new MappingStore(ctx, folder);
 

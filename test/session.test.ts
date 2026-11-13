@@ -147,3 +147,37 @@ test('单元格详情：十六进制字节', () => {
   assert.equal(info.name, 'F1');
   assert.equal(info.start, 1);
 });
+
+test('COMP-3 / COMP 字段解码成数值，非法内容回退十六进制并标橙', () => {
+  const cb = parseCopybook(`
+    01 R.
+       05 ID    PIC S9(005) COMP-3.
+       05 K     PIC 9(001).
+       05 NAME  PIC X(009).
+       05 AMT   PIC S9(007)V99 COMP-3.
+       05 CNT   PIC S9(004) COMP.
+  `); // 3 + 1 + 9 + 5 + 2 = 20
+  const row = (id: string, amt: string, cnt: string) =>
+    rec(Buffer.concat([hexBytes(id), ascii('1FVAO-M006'), hexBytes(amt), hexBytes(cnt)]));
+  const file = Buffer.concat([
+    row('11 80 0C', '00 12 34 56 7C', '00 7B'),
+    row('00 00 0D', '00 00 00 00 5D', 'FF FF'),
+    row('00 00 0F', '00 00 00 00 50', '00 01'), // AMT 符号位为 0 → 非法
+  ]);
+  const s = session(file);
+  s.setCopybook(20, { name: 'c.cpy', copybook: cb });
+  const g = s.init().groups[0];
+  assert.equal(g.banner.level, 'info');
+  assert.deepEqual(g.columns.map((c) => c.usage), ['COMP-3', 'DISPLAY', 'DISPLAY', 'COMP-3', 'COMP']);
+  const rows = s.getRows('L20', 0, 3) as RecRow[];
+  assert.deepEqual(rows[0].c, ['+11800', '1', 'FVAO-M006', '+12345.67', '+123']);
+  assert.deepEqual(rows[0].w, []);
+  assert.deepEqual([rows[1].c[0], rows[1].c[3], rows[1].c[4]], ['-0', '-0.05', '-1']);
+  assert.equal(rows[2].c[0], '+0');
+  assert.equal(rows[2].c[3], '00 00 00 00 50');
+  assert.deepEqual(rows[2].w, [3]);
+  // 小端设置：00 7B → 0x7B00 = 31488
+  const s2 = new RdwSession(file, 't.dat', { binaryEndian: 'little' });
+  s2.setCopybook(20, { name: 'c.cpy', copybook: cb });
+  assert.equal((s2.getRows('L20', 0, 1)[0] as RecRow).c[4], '+31488');
+});

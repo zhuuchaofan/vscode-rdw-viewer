@@ -15,6 +15,10 @@ export interface Column {
   kind: ColumnKind;
   type: FieldType;
   signed: boolean;
+  /** USAGE：COMP-3 / COMP 等字段会解码成数值显示 */
+  usage: string;
+  /** 小数位数 */
+  scale: number;
   /** 建议列宽（单位 ch） */
   width: number;
 }
@@ -59,9 +63,11 @@ function column(
   fullLen: number,
   kind: ColumnKind,
   type: FieldType,
-  signed: boolean
+  signed: boolean,
+  usage = 'DISPLAY',
+  scale = 0
 ): Column {
-  return { name, pic, start, len, fullLen, kind, type, signed, width: widthOf(name, pic, len, kind) };
+  return { name, pic, start, len, fullLen, kind, type, signed, usage, scale, width: widthOf(name, pic, len, kind) };
 }
 
 function bodyColumns(bodyLen: number): Column[] {
@@ -117,11 +123,11 @@ export function buildColumns(
   for (const f of cb.fields) {
     const start = f.offset + 1;
     if (f.offset + f.length <= bodyLen) {
-      columns.push(column(f.name, f.pic, start, f.length, f.length, 'field', f.type, f.signed));
+      columns.push(column(f.name, f.pic, start, f.length, f.length, 'field', f.type, f.signed, f.usage, f.scale));
     } else if (f.offset < bodyLen) {
-      columns.push(column(f.name, f.pic, start, bodyLen - f.offset, f.length, 'partial', f.type, f.signed));
+      columns.push(column(f.name, f.pic, start, bodyLen - f.offset, f.length, 'partial', f.type, f.signed, f.usage, f.scale));
     } else {
-      columns.push(column(f.name, f.pic, start, 0, f.length, 'missing', f.type, f.signed));
+      columns.push(column(f.name, f.pic, start, 0, f.length, 'missing', f.type, f.signed, f.usage, f.scale));
     }
   }
 
