@@ -16,7 +16,7 @@
   const ERR_COLUMNS = [
     { name: '偏移', pic: '', start: 0, width: 12, kind: 'field', type: 'alnum' },
     { name: '跳过字节', pic: '', start: 0, width: 10, kind: 'field', type: 'alnum' },
-    { name: '原因', pic: '', start: 0, width: 200, kind: 'field', type: 'alnum' },
+    { name: '原因', pic: '', start: 0, width: 110, kind: 'field', type: 'alnum' },
   ];
 
   const state = {
@@ -120,7 +120,8 @@
   function viewWidth() {
     const d = state.init;
     if (state.view === ORDER_VIEW) {
-      let w = visibleCols(ERR_VIEW).total;
+      // 只有存在错误行时，才需要容纳错误行的宽度
+      let w = d.errorCount ? visibleCols(ERR_VIEW).total : 0;
       d.groups.forEach((g) => (w = Math.max(w, visibleCols(g.key).total)));
       return `calc(${LEFT_W}ch + ${w}px)`;
     }
@@ -137,6 +138,7 @@
       `<span class="meta">${sizeKB} · ${d.total - d.errorCount} 条记录` +
       (d.errorCount ? ` · <span class="st-err">${d.errorCount} 处错误</span>` : '') +
       `</span><span class="spacer"></span>` +
+      `<label title="没有 copybook 时，自动识别正文中的 COMP-3 并显示为 [数值]（启发式，可能误判）"><input type="checkbox" id="autoPacked" ${d.autoPacked ? 'checked' : ''}>自动识别 COMP-3</label>` +
       `<label title="按字段名隐藏列（设置：rdwViewer.hiddenFieldPattern）"><input type="checkbox" id="hideFiller" ${state.hideFiller ? 'checked' : ''}>隐藏 FILLER 列</label>` +
       `<label>编码 <select id="enc">${d.encodings
         .map((e) => `<option value="${e}" ${e === d.encoding ? 'selected' : ''}>${e}</option>`)
@@ -144,6 +146,9 @@
     document.getElementById('hideFiller').onchange = (ev) => {
       state.hideFiller = ev.target.checked;
       resetView(true);
+    };
+    document.getElementById('autoPacked').onchange = (ev) => {
+      vscode.postMessage({ type: 'setAutoPacked', on: ev.target.checked });
     };
     document.getElementById('enc').onchange = (ev) => {
       vscode.postMessage({ type: 'setEncoding', encoding: ev.target.value });
@@ -234,6 +239,16 @@
     });
   }
 
+  /* 自动识别 COMP-3 的片段标记：\uE000数值\uE001、\uE002十六进制\uE003 */
+  function plainSeg(s) {
+    return String(s).replace(/\uE000/g, '[').replace(/\uE001/g, ']').replace(/\uE002/g, '‹').replace(/\uE003/g, '›');
+  }
+  function segHtml(s) {
+    return esc(s)
+      .replace(/\uE000([^\uE001]*)\uE001/g, '<span class="pk" title="自动识别的 COMP-3（可能误判）">[$1]</span>')
+      .replace(/\uE002([^\uE003]*)\uE003/g, '<span class="raw">‹$1›</span>');
+  }
+
   /* ---------- 表头 ---------- */
   function headerRowHtml(key, k, isAbs, top) {
     const { vis } = visibleCols(key);
@@ -284,7 +299,8 @@
       const sel =
         state.selected && state.selected.view === view && state.selected.row === i && state.selected.col === ci ? ' sel' : '';
       const num = isNumeric(col) && col.kind !== 'missing' ? ' num' : '';
-      html += `<div class="c f${isW ? ' w' : ''}${sel}${num}" data-w="${px}" data-r="${i}" data-c="${ci}" title="${esc(text)}">${esc(text)}</div>`;
+      const body = col.kind === 'body' ? segHtml(text) : esc(text);
+      html += `<div class="c f${isW ? ' w' : ''}${sel}${num}" data-w="${px}" data-r="${i}" data-c="${ci}" title="${esc(plainSeg(text))}">${body}</div>`;
     }
     return html + '</div>';
   }

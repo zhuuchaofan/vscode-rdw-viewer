@@ -201,3 +201,22 @@ test('多个 01：按记录长度自动选用对应定义，并在提示条中�
   assert.match(g8.banner.text, /选用 DATA-REC/);
   assert.deepEqual(g4.columns.map((c) => c.name), ['H1']);
 });
+
+test('没有 copybook：正文自动识别 COMP-3；关闭开关后按原样解码', () => {
+  const body = Buffer.concat([hexBytes('11 80 0C'), ascii('1FVAO-M006'), hexBytes('22 50 93 0C')]);
+  const s = session(rec(body));
+  const len = body.length;
+  assert.equal(s.init().autoPacked, true);
+  const row = s.getRows(`L${len}`, 0, 1)[0] as RecRow;
+  assert.equal(row.c[0], '+118001FVAO-M006+2250930');
+  assert.deepEqual(row.w, []);
+  assert.equal(s.cellInfo(`L${len}`, 0, 0)!.text, '[+11800]1FVAO-M006[+2250930]');
+
+  s.setAutoPacked(false);
+  const off = s.getRows(`L${len}`, 0, 1)[0] as RecRow;
+  assert.ok(!off.c[0].includes(''));
+  // 指定 copybook 后不再自动识别
+  s.setAutoPacked(true);
+  s.setCopybook(len, { name: 'x.cpy', copybook: parseCopybook(`01 R. 05 A PIC S9(5) COMP-3. 05 B PIC X(10). 05 C PIC S9(7) COMP-3.`) });
+  assert.deepEqual((s.getRows(`L${len}`, 0, 1)[0] as RecRow).c, ['+11800', '1FVAO-M006', '+2250930']);
+});

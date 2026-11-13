@@ -94,6 +94,7 @@ function config() {
     mismatch: c.get<MismatchMode>('lengthMismatch', 'lenient'),
     hiddenPattern: c.get<string>('hiddenFieldPattern', '^FILLER$'),
     binaryEndian: c.get<'big' | 'little'>('binaryEndian', 'big'),
+    autoPacked: c.get<boolean>('autoDetectPacked', true),
   };
 }
 
@@ -203,7 +204,12 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
 
   const cfg = config();
   const fileName = path.basename(uri.fsPath);
-  const session = new RdwSession(bytes, fileName, { encoding: cfg.encoding, mismatch: cfg.mismatch, binaryEndian: cfg.binaryEndian });
+  const session = new RdwSession(bytes, fileName, {
+    encoding: cfg.encoding,
+    mismatch: cfg.mismatch,
+    binaryEndian: cfg.binaryEndian,
+    autoPacked: cfg.autoPacked,
+  });
   const folder = vscode.workspace.getWorkspaceFolder(uri) ?? vscode.workspace.workspaceFolders?.[0];
   const store = new MappingStore(ctx, folder);
 
@@ -291,6 +297,10 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
       case 'clearCopybook':
         await store.set(msg.length, undefined);
         await applyMapping();
+        sendInit();
+        break;
+      case 'setAutoPacked':
+        session.setAutoPacked(!!msg.on);
         sendInit();
         break;
       case 'setEncoding':
