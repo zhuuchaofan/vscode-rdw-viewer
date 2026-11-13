@@ -36,3 +36,38 @@ export function toHex(bytes: Uint8Array): string {
   }
   return parts.join(' ');
 }
+
+/**
+ * 十六进制 dump 的文字栏：按字节返回显示文字。
+ * 多字节字符放在首字节的位置，后续字节为空字符串；不可显示的字节为「.」。
+ * 编码不限于 Shift_JIS：从首字节开始依次尝试 1~4 字节，能解码成一个字符就采用。
+ */
+export function dumpChars(bytes: Uint8Array, decoder: TextDecoder): string[] {
+  const out: string[] = new Array(bytes.length).fill('');
+  let i = 0;
+  while (i < bytes.length) {
+    const b = bytes[i];
+    if (b < 0x80) {
+      out[i] = b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : '.';
+      i++;
+      continue;
+    }
+    let taken = 0;
+    for (let n = 1; n <= 4 && i + n <= bytes.length; n++) {
+      const s = decoder.decode(bytes.subarray(i, i + n));
+      const cps = [...s];
+      if (cps.length === 1 && s !== '�') {
+        const cp = s.codePointAt(0)!;
+        out[i] = cp < 0x20 || (cp >= 0x7f && cp < 0xa0) ? '.' : s;
+        taken = n;
+        break;
+      }
+    }
+    if (!taken) {
+      out[i] = '.';
+      taken = 1;
+    }
+    i += taken;
+  }
+  return out;
+}

@@ -8,6 +8,7 @@ import { encodeShiftJis } from './sjisEncode';
 import { ERR_VIEW } from './session';
 import { parseCopybook, Copybook, selectRecord } from './copybook';
 import { MismatchMode } from './layout';
+import { CompareSession, KeyPart, keyLabel } from './compare';
 
 const COPYBOOK_GLOB = '**/*.{cpy,CPY,cbl,CBL,cob,COB,copy,COPY}';
 const MAPPING_FILE = ['.vscode', 'rdw-viewer.json'];
@@ -572,22 +573,22 @@ async function pickDiscriminator(session: RdwSession, g: Group): Promise<Discrim
   return confirm?.ok ? d : undefined;
 }
 
-async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Promise<void> {
-  let uri = target;
-  if (!uri) {
-    const res = await vscode.window.showOpenDialog({ canSelectMany: false, title: t('ext.selectRdwFile') });
-    uri = res?.[0];
-  }
-  if (!uri) {
-    return;
-  }
+interface LoadedSession {
+  session: RdwSession;
+  fileName: string;
+  store: MappingStore;
+  /** 按保存的设置重新分组、加载 copybook */
+  applyMapping: () => Promise<void>;
+}
 
+/** 读取文件，建立会话并应用保存的 copybook 设置；失败时显示错误并返回 undefined */
+async function loadSession(ctx: vscode.ExtensionContext, uri: vscode.Uri): Promise<LoadedSession | undefined> {
   let bytes: Uint8Array;
   try {
     bytes = await vscode.workspace.fs.readFile(uri);
   } catch (e) {
     vscode.window.showErrorMessage(t('ext.readFailed', { error: (e as Error).message }));
-    return;
+    return undefined;
   }
 
   const cfg = config();
@@ -637,24 +638,47 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
     }
   };
   await applyMapping();
+  return { session, fileName, store, applyMapping };
+}
 
+/** 建立 webview 面板：先加载共用脚本 common.js，再加载 script */
+function createPanel(ctx: vscode.ExtensionContext, title: string, script: string): vscode.WebviewPanel {
   const mediaRoot = vscode.Uri.joinPath(ctx.extensionUri, 'media');
-  const panel = vscode.window.createWebviewPanel('rdwViewer', `RDW: ${fileName}`, vscode.ViewColumn.Active, {
+  const panel = vscode.window.createWebviewPanel('rdwViewer', title, vscode.ViewColumn.Active, {
     enableScripts: true,
     retainContextWhenHidden: true,
     localResourceRoots: [mediaRoot],
   });
   const web = panel.webview;
   const nonce = Array.from({ length: 24 }, () => Math.floor(Math.random() * 36).toString(36)).join('');
-  const js = web.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'main.js'));
+  const common = web.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'common.js'));
+  const js = web.asWebviewUri(vscode.Uri.joinPath(mediaRoot, script));
   const css = web.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'main.css'));
   // 前端不使用行内 style 属性（列宽、行位置通过 CSSOM 设置），因此 CSP 不需要 'unsafe-inline'。
   web.html = `<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="UTF-8">
+<html lang="ja"><head><meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${web.cspSource}; script-src 'nonce-${nonce}';">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="${css}"><title>RDW Viewer</title></head>
-<body><div id="app"></div><script nonce="${nonce}" src="${js}"></script></body></html>`;
+<body><div id="app"></div><script nonce="${nonce}" src="${common}"></script><script nonce="${nonce}" src="${js}"></script></body></html>`;
+  return panel;
+}
+
+async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Promise<void> {
+  let uri = target;
+  if (!uri) {
+    const res = await vscode.window.showOpenDialog({ canSelectMany: false, title: t('ext.selectRdwFile') });
+    uri = res?.[0];
+  }
+  if (!uri) {
+    return;
+  }
+  const loaded = await loadSession(ctx, uri);
+  if (!loaded) {
+    return;
+  }
+  const { session, store, applyMapping, fileName } = loaded;
+  const web = createPanel(ctx, `RDW: ${fileName}`, 'main.js').webview;
 
   let gen = 0;
   const sendInit = () => {
@@ -684,6 +708,12 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
         break;
       case 'cellInfo':
         web.postMessage({ type: 'cell', info: session.cellInfo(msg.g, msg.e, msg.col) ?? null });
+        break;
+      case 'dump':
+        web.postMessage({ type: 'dump', info: session.recordDump(Number(msg.e)) ?? null });
+        break;
+      case 'compare':
+        await openCompare(ctx, uri);
         break;
       case 'chooseCopybook': {
         const g = session.groupByKey(msg.g);
@@ -767,10 +797,173 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
   });
 }
 
+/**
+ * 比较用的键项目：从 A 的 copybook 字段中多选，或手动输入位置范围（例：1-3,8-10）。
+ */
+async function pickCompareKey(cmp: CompareSession): Promise<KeyPart[] | undefined> {
+  interface Item extends vscode.QuickPickItem {
+    part?: KeyPart;
+    manual?: boolean;
+  }
+  const seen = new Map<string, Item & { lens: number[] }>();
+  for (const g of cmp.a.groups) {
+    if (!g.copybook) continue;
+    for (const c of g.columns.filter((x) => x.kind === 'field')) {
+      const k = `${c.name}|${c.start}|${c.len}`;
+      const hit = seen.get(k);
+      if (hit) {
+        hit.lens.push(g.length);
+        continue;
+      }
+      seen.set(k, { label: c.name, part: { start: c.start, length: c.len }, lens: [g.length], description: c.pic });
+    }
+  }
+  const items: Item[] = [...seen.values()].map((x) => ({
+    label: x.label,
+    part: x.part,
+    description: t('ext.cmp.fieldDesc', { pos: x.part!.start, len: x.part!.length, pic: x.description ?? '', lens: x.lens.join('/') }),
+  }));
+  let parts: KeyPart[] = [];
+  let manual = items.length === 0;
+  if (!manual) {
+    items.push({ label: t('ext.cmp.manual'), manual: true });
+    const picked = await vscode.window.showQuickPick(items, {
+      title: t('ext.cmp.keyTitle'),
+      placeHolder: t('ext.cmp.keyPlaceholder'),
+      canPickMany: true,
+      matchOnDescription: true,
+    });
+    if (!picked || picked.length === 0) {
+      return undefined;
+    }
+    manual = picked.some((x) => x.manual);
+    parts = picked.filter((x) => x.part).map((x) => x.part!);
+  }
+  if (manual) {
+    const parse = (v: string): KeyPart[] | undefined => {
+      const out: KeyPart[] = [];
+      for (const piece of v.split(/[,，、\s]+/).filter(Boolean)) {
+        const m = /^(\d+)(?:[-~](\d+))?$/.exec(piece);
+        if (!m) return undefined;
+        const from = +m[1];
+        const to = m[2] ? +m[2] : from;
+        if (from < 1 || to < from || to > 65535) return undefined;
+        out.push({ start: from, length: to - from + 1 });
+      }
+      return out.length ? out : undefined;
+    };
+    const text = await vscode.window.showInputBox({
+      title: t('ext.cmp.manualTitle'),
+      prompt: t('ext.cmp.manualPrompt'),
+      placeHolder: '1-10',
+      validateInput: (v) => (parse(v) ? undefined : t('ext.cmp.manualInvalid')),
+    });
+    if (!text) {
+      return undefined;
+    }
+    parts = parts.concat(parse(text)!);
+  }
+  return parts;
+}
+
+/** 两个文件的比较。a / b 省略时用对话框选择 */
+async function openCompare(ctx: vscode.ExtensionContext, a?: vscode.Uri, b?: vscode.Uri): Promise<void> {
+  if (!a) {
+    a = (await vscode.window.showOpenDialog({ canSelectMany: false, title: t('ext.cmp.pickA') }))?.[0];
+    if (!a) return;
+  }
+  if (!b) {
+    b = (
+      await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        title: t('ext.cmp.pickB', { name: path.basename(a.fsPath) }),
+        defaultUri: vscode.Uri.joinPath(a, '..'),
+      })
+    )?.[0];
+    if (!b) return;
+  }
+  const la = await loadSession(ctx, a);
+  const lb = la && (await loadSession(ctx, b));
+  if (!la || !lb) {
+    return;
+  }
+  let cmp = new CompareSession(la.session, lb.session);
+  let files = [la.fileName, lb.fileName];
+  const panel = createPanel(ctx, `RDW: ${la.fileName} ⇄ ${lb.fileName}`, 'compare.js');
+  const web = panel.webview;
+
+  let gen = 0;
+  const sendInit = () => {
+    gen++;
+    web.postMessage({
+      ...cmp.init(),
+      gen,
+      fileA: files[0],
+      fileB: files[1],
+      keyLabel: keyLabel(cmp.keys),
+      hiddenPattern: config().hiddenPattern,
+      version: String(ctx.extension.packageJSON.version ?? ''),
+      strings: uiStrings(),
+    });
+  };
+
+  web.onDidReceiveMessage(async (msg) => {
+    switch (msg.type) {
+      case 'ready':
+        sendInit();
+        break;
+      case 'getRows':
+        web.postMessage({
+          type: 'rows',
+          gen: msg.gen,
+          d: !!msg.d,
+          start: msg.start,
+          rows: cmp.getRows(!!msg.d, msg.start, msg.count),
+        });
+        break;
+      case 'cellInfo':
+        web.postMessage({ type: 'cell', p: msg.p, info: cmp.cellPair(msg.p, msg.side === 'b' ? 'b' : 'a', msg.col) });
+        break;
+      case 'dump':
+        web.postMessage({ type: 'dump', p: msg.p, info: cmp.dumpPair(msg.p) });
+        break;
+      case 'findDiff':
+        web.postMessage({ type: 'found', i: cmp.findDiff(!!msg.d, msg.from, msg.dir < 0 ? -1 : 1), dir: msg.dir });
+        break;
+      case 'chooseKey': {
+        const keys = await pickCompareKey(cmp);
+        if (keys) {
+          cmp.configure('key', keys);
+        }
+        sendInit();
+        break;
+      }
+      case 'setIndex':
+        cmp.configure('index', []);
+        sendInit();
+        break;
+      case 'swap': {
+        const next = new CompareSession(cmp.b, cmp.a);
+        next.configure(cmp.mode, cmp.keys);
+        cmp = next;
+        files = [files[1], files[0]];
+        panel.title = `RDW: ${files[0]} ⇄ ${files[1]}`;
+        sendInit();
+        break;
+      }
+    }
+  });
+}
+
 export function activate(ctx: vscode.ExtensionContext): void {
   setLocale(vscode.env.language);
   ctx.subscriptions.push(
-    vscode.commands.registerCommand('rdwViewer.open', (uri?: vscode.Uri) => openViewer(ctx, uri))
+    vscode.commands.registerCommand('rdwViewer.open', (uri?: vscode.Uri) => openViewer(ctx, uri)),
+    // エクスプローラーで 2 ファイルを選択した場合は uris に両方が入る
+    vscode.commands.registerCommand('rdwViewer.compare', (uri?: vscode.Uri, uris?: vscode.Uri[]) => {
+      const list = (uris ?? []).filter((u) => u instanceof vscode.Uri);
+      return list.length >= 2 ? openCompare(ctx, list[0], list[1]) : openCompare(ctx, uri);
+    })
   );
 }
 

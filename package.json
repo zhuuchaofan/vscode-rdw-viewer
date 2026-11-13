@@ -2,7 +2,7 @@
   "name": "rdw-viewer",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "publisher": "zhuuchaofan",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -39,6 +39,10 @@
       {
         "command": "rdwViewer.open",
         "title": "%command.open%"
+      },
+      {
+        "command": "rdwViewer.compare",
+        "title": "%command.compare%"
       }
     ],
     "menus": {
@@ -47,6 +51,11 @@
           "command": "rdwViewer.open",
           "when": "!explorerResourceIsFolder",
           "group": "navigation@100"
+        },
+        {
+          "command": "rdwViewer.compare",
+          "when": "!explorerResourceIsFolder",
+          "group": "navigation@101"
         }
       ],
       "commandPalette": [

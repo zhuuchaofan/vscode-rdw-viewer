@@ -259,3 +259,121 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
   vertical-align: middle;
   background: var(--gc, transparent);
 }
+
+/* ======================================================================
+ * 十六进制 dump 面板（表格下方，可拖动分隔条调整高度）
+ * ====================================================================== */
+.split {
+  flex: 0 0 5px;
+  cursor: row-resize;
+  background: var(--vscode-panel-border, #8884);
+}
+.split:hover { background: var(--vscode-sash-hoverBorder, var(--vscode-focusBorder)); }
+.dump {
+  flex: 0 0 auto;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, "MS Gothic", monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+  line-height: 1.45;
+  padding: 2px 10px 6px;
+  box-sizing: border-box;
+}
+.dump .dhead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 2px 0;
+  font-family: var(--vscode-font-family);
+}
+.dump .drdw { opacity: 0.7; }
+.dump .derr { color: var(--err); }
+.dump .dinfo { opacity: 0.7; font-family: var(--vscode-font-family); min-height: 1.45em; white-space: nowrap; }
+.dump .dempty { opacity: 0.6; padding: 6px 0; font-family: var(--vscode-font-family); }
+.dline { white-space: pre; display: flex; }
+.dline .doff { flex: 0 0 6ch; opacity: 0.55; }
+.dline .dhex { flex: 0 0 auto; display: inline-flex; }
+.dline .dhex .b { width: 3ch; text-align: center; cursor: pointer; }
+.dline .dhex .b.g8 { margin-left: 1ch; }
+.dline .dtxt { margin-left: 2ch; display: inline-flex; }
+.dline .t { display: inline-block; overflow: visible; cursor: pointer; }
+.dline .t.w1 { width: 1ch; }
+.dline .t.w2 { width: 2ch; }
+.dline .t.w3 { width: 3ch; }
+.dline .t.w4 { width: 4ch; }
+.druler { opacity: 0.45; }
+.druler .b { cursor: default; }
+/* 字段交替着色、选中字段、与比较对象不同的字节 */
+.dump .fa { background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 12%, transparent); }
+.dump .fb { background: color-mix(in srgb, var(--vscode-charts-green, #388a34) 12%, transparent); }
+.dump .fs { background: var(--vscode-editor-selectionBackground, rgba(0, 120, 215, 0.35)); }
+.dump .dd { color: var(--vscode-editorError-foreground, var(--err)); font-weight: 700; text-decoration: underline; }
+.dump [data-i]:hover { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+
+/* ======================================================================
+ * 比较视图：A / B 左右并排
+ * ====================================================================== */
+#panes { flex: 1; display: flex; min-height: 0; }
+.pane {
+  flex: 1 1 50%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.pane + .pane { border-left: 3px solid var(--grid-strong); }
+.pane .ptitle {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  align-items: baseline;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.pane .ptitle .meta, .pane .ptitle .cbn { opacity: 0.7; font-size: 0.92em; }
+.pane .scroller {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+  font-family: var(--vscode-editor-font-family, "MS Gothic", monospace);
+  font-size: var(--vscode-editor-font-size, 13px);
+}
+.pane .inner { position: relative; }
+.pane .hdr { position: sticky; top: 0; z-index: 4; }
+.pane .hdr .row:last-child .c { border-bottom: 2px solid var(--grid-strong); }
+.pane .rows { position: relative; }
+.pane .rows .row { position: absolute; left: 0; }
+.pane .rows .row:not(.hdrrow):hover .c { background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12)); }
+.lc0 { left: 0; width: 8ch; text-align: right; }
+.lc1 { left: 8ch; width: 3ch; text-align: center; border-right: 2px solid var(--grid-strong); font-weight: 700; }
+.lch { left: 0; width: 11ch; text-align: right; border-right: 2px solid var(--grid-strong); }
+
+/* 差异：变更的单元格、只在一侧的记录、另一侧的空行 */
+:root {
+  --del: var(--vscode-diffEditor-removedTextBackground, rgba(255, 0, 0, 0.2));
+  --ins: var(--vscode-diffEditor-insertedTextBackground, rgba(155, 185, 85, 0.2));
+  --chg: color-mix(in srgb, var(--vscode-charts-yellow, #bf8803) 28%, transparent);
+}
+.row.st-chg .lc1 { color: var(--vscode-charts-yellow, #bf8803); }
+.row.st-a .lc1 { color: var(--err); }
+.row.st-b .lc1 { color: var(--ok); }
+.pane .rows .row .c.f.dd, .pane .rows .row:hover .c.f.dd, .pane .rows .row.odd .c.f.dd { background: var(--chg); color: var(--vscode-editor-foreground); font-weight: 600; }
+#pa .rows .row.st-a:not(.ph) .c { background: var(--del); }
+#pb .rows .row.st-b:not(.ph) .c { background: var(--ins); }
+.row.ph {
+  background: repeating-linear-gradient(-45deg, transparent 0 6px, color-mix(in srgb, var(--vscode-foreground) 8%, transparent) 6px 7px);
+  border-bottom: 1px solid var(--grid);
+}
+.row.ph .c { background: transparent; }
+.pane .rows .row.selrow .c:not(.dd) { background: var(--vscode-list-inactiveSelectionBackground, rgba(0, 120, 215, 0.15)); }
+
+#cellbar .tag { font-weight: 700; opacity: 0.7; }
+#cellbar .value.dd { border-color: var(--vscode-charts-yellow, #bf8803); }
+#cellbar .value.none { opacity: 0.5; flex: 0 0 auto; }
+
+/* 比较视图的 dump：A / B 左右并排 */
+.cmpdump { display: flex; gap: 0; padding: 0; }
+.cmpdump .dcol { flex: 1 1 50%; min-width: 0; overflow: auto; padding: 2px 10px 6px; }
+.cmpdump .dcol + .dcol { border-left: 3px solid var(--grid-strong); }
+.dtitle { font-family: var(--vscode-font-family); padding-top: 2px; }
+.cmpdump { overflow: hidden; }
