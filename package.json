@@ -2,7 +2,7 @@
   "name": "rdw-viewer",
   "displayName": "RDW Viewer",
   "description": "查看带前后 4 字节小端序 RDW 的可变长记录文件，支持 COBOL copybook 按字段展示",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "local",
   "license": "MIT",
   "engines": {

@@ -220,3 +220,64 @@ test('没有 copybook：正文自动识别 COMP-3；关闭开关后按原样解�
   s.setCopybook(len, { name: 'x.cpy', copybook: parseCopybook(`01 R. 05 A PIC S9(5) COMP-3. 05 B PIC X(10). 05 C PIC S9(7) COMP-3.`) });
   assert.deepEqual((s.getRows(`L${len}`, 0, 1)[0] as RecRow).c, ['+11800', '1FVAO-M006', '+2250930']);
 });
+
+test('判别字段（COMP-3）：同一长度按字段值分组，各自使用不同 copybook', () => {
+  // 长度都是 8：前 3 字节为 COMP-3 的记录类型
+  const hdr = (s: string) => rec(Buffer.concat([hexBytes('11 80 0C'), ascii(s)]));
+  const dat = (s: string) => rec(Buffer.concat([hexBytes('11 85 0C'), ascii(s)]));
+  const file = Buffer.concat([hdr('HEAD1'), dat('A1234'), dat('B5678'), rec(Buffer.concat([hexBytes('99 99 9C'), ascii('ZZZZZ')]))]);
+  const s = session(file);
+  assert.deepEqual(s.groups.map((g) => g.key), ['L8']);
+
+  const d = { start: 1, length: 3, type: 'comp3' as const };
+  assert.deepEqual(s.discriminatorValues(8, d), [
+    { value: '+11850', count: 2 },
+    { value: '+11800', count: 1 },
+    { value: '+99999', count: 1 },
+  ]);
+
+  s.setDiscriminator(8, d);
+  const cbHdr = parseCopybook('01 H. 05 TYP PIC S9(5) COMP-3. 05 TITLE PIC X(5).');
+  const cbDat = parseCopybook('01 D. 05 TYP PIC S9(5) COMP-3. 05 KIND PIC X(1). 05 NUM PIC 9(4).');
+  s.setCopybook(8, { name: 'h.cpy', copybook: cbHdr }, undefined, '+11800');
+  s.setCopybook(8, { name: 'd.cpy', copybook: cbDat }, undefined, '+11850');
+
+  const init = s.init();
+  assert.deepEqual(init.groups.map((g) => [g.value, g.count, g.copybookName]), [
+    ['+11800', 1, 'h.cpy'],
+    ['+11850', 2, 'd.cpy'],
+    ['+99999', 1, null],
+  ]);
+  assert.match(init.groups[0].banner.text, /位置 1~3（COMP-3） = \+11800/);
+  // 未匹配的值：整条正文，提示选择 copybook
+  assert.equal(init.groups[2].columns[0].kind, 'body');
+
+  const datKey = init.groups[1].key;
+  assert.deepEqual((s.getRows(datKey, 0, 2) as RecRow[]).map((r) => r.c), [
+    ['+11850', 'A', '1234'],
+    ['+11850', 'B', '5678'],
+  ]);
+  // 文件顺序视图：分组切换处插入表头
+  const order = s.getRows('ORDER', 0, s.count('ORDER')).map((r) => r.t);
+  assert.deepEqual(order, ['hdr', 'hdr', 'hdr', 'rec', 'hdr', 'hdr', 'hdr', 'rec', 'rec', 'hdr', 'hdr', 'hdr', 'rec']);
+
+  // 取消区分：回到按长度分组；再次区分时之前指定的 copybook 仍然有效
+  s.setDiscriminator(8, null);
+  assert.deepEqual(s.groups.map((g) => g.key), ['L8']);
+  s.setDiscriminator(8, d);
+  assert.equal(s.init().groups[1].copybookName, 'd.cpy');
+});
+
+test('判别字段（文字）：去掉末尾空格；超出记录长度时单独成组', () => {
+  const file = Buffer.concat([rec(ascii('01 AAAA')), rec(ascii('02 BBBB')), rec(ascii('01 CCCC')), rec(ascii('X'))]);
+  const s = session(file);
+  s.setDiscriminator(7, { start: 1, length: 3, type: 'text' });
+  assert.deepEqual(s.init().groups.map((g) => [g.length, g.value, g.count]), [
+    [7, '01', 2],
+    [7, '02', 1],
+    [1, null, 1],
+  ]);
+  // 判别字段超出记录长度
+  s.setDiscriminator(1, { start: 1, length: 2, type: 'text' });
+  assert.equal(s.init().groups.find((g) => g.length === 1)!.value, '(超出记录长度)');
+});

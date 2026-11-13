@@ -6,12 +6,29 @@ import { RdwIndex, scanRdw, RDW_SIZE } from './rdw';
 import { Copybook } from './copybook';
 import { Banner, Column, MismatchMode, buildColumns, displayWidth } from './layout';
 import { SUPPORTED_ENCODINGS, createDecoder, sanitize, toHex } from './decode';
-import { decodeByUsage } from './numeric';
+import { decodeByUsage, decodePacked } from './numeric';
 import { segmentBody, formatSegments, plainSegments } from './autodetect';
+
+/** 判别字段：同一长度的记录，按这个字段的值选用不同的 copybook */
+export type DiscriminatorType = 'text' | 'comp3';
+export interface Discriminator {
+  /** 在正文中的起始位置（从 1 开始） */
+  start: number;
+  length: number;
+  type: DiscriminatorType;
+}
+
+export function discriminatorLabel(d: Discriminator): string {
+  return `位置 ${d.start}~${d.start + d.length - 1}（${d.type === 'comp3' ? 'COMP-3' : '文字'}）`;
+}
+
+type CopybookRef = { name: string; copybook: Copybook };
 
 export interface Group {
   key: string;
   length: number;
+  /** 按判别字段分组时的字段值；未按字段值区分时为 undefined */
+  value?: string;
   entries: Uint32Array;
   copybook: { name: string; copybook: Copybook } | null;
   loadError?: string;
@@ -22,6 +39,8 @@ export interface Group {
 export interface GroupInfo {
   key: string;
   length: number;
+  value: string | null;
+  discLabel: string | null;
   count: number;
   copybookName: string | null;
   banner: Banner;
@@ -86,6 +105,10 @@ const fmtOffset = (n: number): string => '0x' + n.toString(16).toUpperCase().pad
 export class RdwSession {
   readonly index: RdwIndex;
   readonly groups: Group[] = [];
+  /** 长度 → 判别字段 */
+  private discriminators = new Map<number, Discriminator>();
+  /** 分组键 → 已指定的 copybook（重新分组后保留） */
+  private assigned = new Map<string, { ref: CopybookRef | null; loadError?: string }>();
   private errorEntries: Uint32Array = new Uint32Array(0);
   private entryGroup: Int32Array;
   private displayRows: Int32Array = new Int32Array(0);
@@ -113,42 +136,68 @@ export class RdwSession {
     this.buildGroups();
   }
 
+  static groupKey(length: number, value?: string): string {
+    return value === undefined ? `L${length}` : `L${length}=${value}`;
+  }
+
+  /** 读取判别字段的值（COMP-3 解码成数值，文字去掉末尾空格） */
+  private discValue(entry: number, d: Discriminator): string {
+    const bodyLen = this.index.lengths[entry];
+    if (d.start - 1 + d.length > bodyLen) {
+      return '(超出记录长度)';
+    }
+    const base = this.index.offsets[entry] + RDW_SIZE + d.start - 1;
+    const bytes = this.buf.subarray(base, base + d.length);
+    if (d.type === 'comp3') {
+      const signed = (bytes[bytes.length - 1] & 0x0f) !== 0xf;
+      const r = decodePacked(bytes, 0, signed);
+      return r.ok ? r.text : `(无效 ${toHex(bytes)})`;
+    }
+    return sanitize(this.decoder.decode(bytes)).trimEnd() || '(空白)';
+  }
+
   private buildGroups(): void {
     const { index } = this;
-    const byLen = new Map<number, number[]>();
+    const byKey = new Map<string, { length: number; value?: string; list: number[] }>();
     const errs: number[] = [];
     for (let e = 0; e < index.count; e++) {
       if (index.isError[e]) {
         errs.push(e);
         continue;
       }
-      const len = index.lengths[e];
-      let list = byLen.get(len);
-      if (!list) {
-        list = [];
-        byLen.set(len, list);
+      const length = index.lengths[e];
+      const d = this.discriminators.get(length);
+      const value = d ? this.discValue(e, d) : undefined;
+      const key = RdwSession.groupKey(length, value);
+      let slot = byKey.get(key);
+      if (!slot) {
+        slot = { length, value, list: [] };
+        byKey.set(key, slot);
       }
-      list.push(e);
+      slot.list.push(e);
     }
     this.errorEntries = Uint32Array.from(errs);
-    for (const [length, list] of byLen) {
+    for (const [key, slot] of byKey) {
+      const a = this.assigned.get(key);
       const g: Group = {
-        key: `L${length}`,
-        length,
-        entries: Uint32Array.from(list),
-        copybook: null,
+        key,
+        length: slot.length,
+        value: slot.value,
+        entries: Uint32Array.from(slot.list),
+        copybook: a?.ref ?? null,
+        loadError: a?.loadError,
         columns: [],
         banner: { level: 'warn', text: '' },
       };
       this.groups.push(g);
       const gi = this.groups.length - 1;
-      for (const e of list) {
+      for (const e of slot.list) {
         this.entryGroup[e] = gi;
       }
       this.refreshGroup(g);
     }
 
-    // 文件顺序视图：copybook 切换（即长度变化）时插入 3 行表头
+    // 文件顺序视图：分组（即 copybook）切换时插入 3 行表头
     const display: number[] = [];
     let lastGi = -1;
     for (let e = 0; e < index.count; e++) {
@@ -164,10 +213,20 @@ export class RdwSession {
     this.displayRows = Int32Array.from(display);
   }
 
+  private rebuild(): void {
+    this.groups.length = 0;
+    this.entryGroup.fill(-1);
+    this.buildGroups();
+  }
+
   private refreshGroup(g: Group): void {
     const set = buildColumns(g.length, g.copybook, this.mismatch, g.loadError);
     g.columns = set.columns;
     g.banner = set.banner;
+    const d = this.discriminators.get(g.length);
+    if (g.value !== undefined && d) {
+      g.banner = { ...g.banner, text: `【${discriminatorLabel(d)} = ${g.value}】${g.banner.text}` };
+    }
     this.fitBodyWidth(g);
   }
 
@@ -203,14 +262,50 @@ export class RdwSession {
     return this.groups.find((g) => g.key === key);
   }
 
-  setCopybook(length: number, ref: { name: string; copybook: Copybook } | null, loadError?: string): void {
-    const g = this.groups.find((x) => x.length === length);
+  /**
+   * 为某个分组指定 copybook。value 为判别字段的值；未按字段值区分时省略。
+   * 指定结果按分组键记住，重新分组后仍然有效。
+   */
+  setCopybook(length: number, ref: CopybookRef | null, loadError?: string, value?: string): void {
+    const key = RdwSession.groupKey(length, value);
+    this.assigned.set(key, { ref, loadError });
+    const g = this.groupByKey(key);
     if (!g) {
       return;
     }
     g.copybook = ref;
     g.loadError = loadError;
     this.refreshGroup(g);
+  }
+
+  getDiscriminator(length: number): Discriminator | undefined {
+    return this.discriminators.get(length);
+  }
+
+  /** 按判别字段区分（d=null 取消）；会重新分组 */
+  setDiscriminator(length: number, d: Discriminator | null): void {
+    const cur = this.discriminators.get(length);
+    if (JSON.stringify(cur ?? null) === JSON.stringify(d)) {
+      return;
+    }
+    if (d) {
+      this.discriminators.set(length, d);
+    } else {
+      this.discriminators.delete(length);
+    }
+    this.rebuild();
+  }
+
+  /** 预览：某个长度的记录在判别字段上有哪些值、各多少条（按条数从多到少） */
+  discriminatorValues(length: number, d: Discriminator): Array<{ value: string; count: number }> {
+    const counts = new Map<string, number>();
+    for (let e = 0; e < this.index.count; e++) {
+      if (!this.index.isError[e] && this.index.lengths[e] === length) {
+        const v = this.discValue(e, d);
+        counts.set(v, (counts.get(v) ?? 0) + 1);
+      }
+    }
+    return [...counts].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count);
   }
 
   setEncoding(label: string): boolean {
@@ -220,7 +315,11 @@ export class RdwSession {
     }
     this.decoder = d;
     this.encoding = label;
-    this.groups.forEach((g) => this.fitBodyWidth(g));
+    if ([...this.discriminators.values()].some((x) => x.type === 'text')) {
+      this.rebuild();
+    } else {
+      this.groups.forEach((g) => this.fitBodyWidth(g));
+    }
     return true;
   }
 
@@ -251,6 +350,8 @@ export class RdwSession {
       groups: this.groups.map((g) => ({
         key: g.key,
         length: g.length,
+        value: g.value ?? null,
+        discLabel: g.value !== undefined && this.discriminators.has(g.length) ? discriminatorLabel(this.discriminators.get(g.length)!) : null,
         count: g.entries.length,
         copybookName: g.copybook ? g.copybook.name : null,
         banner: g.banner,
