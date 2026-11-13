@@ -19,7 +19,9 @@ export interface ByteSource {
    * 如需长期持有，调用方应自行拷贝。
    */
   read(offset: number, length: number): Uint8Array;
-  /** 释放底层文件描述符（内存源为空操作） */
+  /** 读取 offset 处的小端 uint16（可选的快速路径：不创建子数组；超出范围的字节按 0 计） */
+  u16le?(offset: number): number;
+  /** 释放底层文件描述符（内存源为空操作；可重复调用） */
   close(): void;
 }
 
@@ -77,8 +79,15 @@ export class PagedFileSource implements ByteSource {
   readonly size: number;
   readonly pageSize: number;
   readonly maxPages: number;
+  /** 当前打开着的文件描述符个数（供测试确认没有泄漏） */
+  static openCount = 0;
   private fd: number;
   private closed = false;
+  /** 最近访问的两页（u16le 的快速路径；重新对齐时会在相隔不到 64KB 的两个位置之间来回读取） */
+  private hotIdx = -1;
+  private hot: CachePage | undefined;
+  private hot2Idx = -1;
+  private hot2: CachePage | undefined;
   /** Map 按插入顺序维护 LRU：最近访问的移到末尾，淘汰时取第一个键并复用其页内存 */
   private pages = new Map<number, CachePage>();
   private scratch = new Uint8Array(65536 + 16);
@@ -88,6 +97,11 @@ export class PagedFileSource implements ByteSource {
     this.size = size;
     this.pageSize = Math.max(512, opts.pageSize ?? DEFAULT_PAGE_SIZE);
     this.maxPages = Math.max(2, opts.maxPages ?? DEFAULT_MAX_PAGES);
+    PagedFileSource.openCount++;
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
   }
 
   static open(filePath: string, opts?: PagedFileOptions): PagedFileSource {
@@ -126,6 +140,15 @@ export class PagedFileSource implements ByteSource {
       const oldestKey = this.pages.keys().next().value as number;
       const evicted = this.pages.get(oldestKey)!;
       this.pages.delete(oldestKey);
+      // 被淘汰页的内存会被复用，快速路径不能再指向它
+      if (oldestKey === this.hotIdx) {
+        this.hotIdx = -1;
+        this.hot = undefined;
+      }
+      if (oldestKey === this.hot2Idx) {
+        this.hot2Idx = -1;
+        this.hot2 = undefined;
+      }
       buf = evicted.data;
     } else {
       buf = new Uint8Array(this.pageSize);
@@ -191,11 +214,40 @@ export class PagedFileSource implements ByteSource {
     return out.subarray(0, written);
   }
 
+  u16le(offset: number): number {
+    if (this.closed || offset < 0 || offset >= this.size) {
+      return 0;
+    }
+    const idx = Math.floor(offset / this.pageSize);
+    let p: CachePage;
+    if (idx === this.hotIdx) {
+      p = this.hot!;
+    } else if (idx === this.hot2Idx) {
+      p = this.hot2!;
+    } else {
+      p = this.getPage(idx);
+      this.hot2Idx = this.hotIdx;
+      this.hot2 = this.hot;
+      this.hotIdx = idx;
+      this.hot = p;
+    }
+    const at = offset - idx * this.pageSize;
+    if (at + 1 < p.validLen) {
+      return p.data[at] | (p.data[at + 1] << 8);
+    }
+    // 跨页（或文件末尾只剩 1 字节）
+    const b = this.read(offset, 2);
+    return (b[0] ?? 0) | ((b[1] ?? 0) << 8);
+  }
+
   close(): void {
     if (this.closed) {
       return;
     }
     this.closed = true;
+    PagedFileSource.openCount--;
+    this.hot = this.hot2 = undefined;
+    this.hotIdx = this.hot2Idx = -1;
     this.pages.clear();
     try {
       fs.closeSync(this.fd);
