@@ -228,9 +228,9 @@ export class CompareSession {
     const B = this.b;
     const bufA = A.raw;
     const bufB = B.raw;
-    // 整条正文用 Buffer.compare（原生 memcmp）比较，比逐字节的循环快得多
-    const nodeA = Buffer.from(bufA.buffer, bufA.byteOffset, bufA.byteLength);
-    const nodeB = Buffer.from(bufB.buffer, bufB.byteOffset, bufB.byteLength);
+    // 内存模式下直接用整块 Buffer.compare（原生 memcmp）；分页大文件模式下按需分页读取并用原生 Buffer.compare 比较
+    const nodeA = bufA ? Buffer.from(bufA.buffer, bufA.byteOffset, bufA.byteLength) : undefined;
+    const nodeB = bufB ? Buffer.from(bufB.buffer, bufB.byteOffset, bufB.byteLength) : undefined;
     const ra = A.recordEntries();
     const rb = B.recordEntries();
     const na = ra.length;
@@ -247,9 +247,13 @@ export class CompareSession {
       pa.set(ra);
       pb.set(rb);
     } else {
-      // 键直接按字节做哈希和比较（开放定址哈希表），不为每条记录生成字符串
+      // 键直接按字节做哈希和比较（开放定址哈希表），不为每条记录生成字符串。
+      // 分页文件模式下，把每条记录紧凑拼接后的键字节存进连续 Uint8Array（keysB），
+      // 避免哈希冲突回表时触发随机磁盘页淘汰。
       const keyEnd = Math.max(...keys.map((k) => k.start - 1 + k.length));
-      const hashOf = (buf: Uint8Array, base: number): number => {
+      const keyTotalLen = keys.reduce((sum, k) => sum + k.length, 0);
+
+      const hashRaw = (buf: Uint8Array, base: number): number => {
         let h = 0x811c9dc5;
         for (const part of keys) {
           const from = base + part.start - 1;
@@ -259,8 +263,48 @@ export class CompareSession {
         }
         return h >>> 0;
       };
-      const sameKey = (x: Uint8Array, xb: number, y: Uint8Array, yb: number): boolean =>
-        keys.every((part) => sameRange(x, xb + part.start - 1, y, yb + part.start - 1, part.length));
+      const hashSource = (s: RdwSession, base: number, dst?: Uint8Array, dstOff = 0): number => {
+        let h = 0x811c9dc5;
+        let w = dstOff;
+        for (const part of keys) {
+          const slice = s.source.read(base + part.start - 1, part.length);
+          if (dst) {
+            dst.set(slice, w);
+            w += part.length;
+          }
+          for (let i = 0; i < slice.length; i++) {
+            h = Math.imul(h ^ slice[i], 0x01000193);
+          }
+        }
+        return h >>> 0;
+      };
+
+      const keysB = bufB ? undefined : new Uint8Array(nb * keyTotalLen);
+      const keyScratchA = bufA && bufB ? undefined : new Uint8Array(keyTotalLen);
+
+      const sameKeyBB = (j1: number, b1: number, j2: number, b2: number): boolean => {
+        if (bufB) {
+          return keys.every((part) => sameRange(bufB, b1 + part.start - 1, bufB, b2 + part.start - 1, part.length));
+        }
+        return sameRange(keysB!, j1 * keyTotalLen, keysB!, j2 * keyTotalLen, keyTotalLen);
+      };
+      const sameKeyAB = (baseA: number, jB: number, baseB: number): boolean => {
+        if (bufA && bufB) {
+          return keys.every((part) => sameRange(bufA, baseA + part.start - 1, bufB, baseB + part.start - 1, part.length));
+        }
+        if (keysB) {
+          return sameRange(keyScratchA!, 0, keysB, jB * keyTotalLen, keyTotalLen);
+        }
+        // A 为分页文件、B 为内存缓冲区
+        let w = 0;
+        for (const part of keys) {
+          if (!sameRange(keyScratchA!, w, bufB!, baseB + part.start - 1, part.length)) {
+            return false;
+          }
+          w += part.length;
+        }
+        return true;
+      };
 
       let cap = 16;
       while (cap < nb * 2) {
@@ -279,15 +323,17 @@ export class CompareSession {
           return;
         }
         const base = B.bodyOffset(e);
-        let slot = hashOf(bufB, base) & mask;
+        const h = bufB ? hashRaw(bufB, base) : hashSource(B, base, keysB, j * keyTotalLen);
+        let slot = h & mask;
         for (;;) {
           const head = table[slot];
           if (head === 0) {
             table[slot] = j + 1;
             break;
           }
-          if (sameKey(bufB, base, bufB, B.bodyOffset(rb[head - 1]))) {
-            next[j] = head - 1;
+          const hj = head - 1;
+          if (sameKeyBB(j, base, hj, B.bodyOffset(rb[hj]))) {
+            next[j] = hj;
             table[slot] = j + 1;
             break;
           }
@@ -311,13 +357,27 @@ export class CompareSession {
           return;
         }
         const base = A.bodyOffset(e);
-        let slot = hashOf(bufA, base) & mask;
+        let h: number;
+        if (bufA && bufB) {
+          h = hashRaw(bufA, base);
+        } else if (bufA) {
+          h = hashRaw(bufA, base);
+          let w = 0;
+          for (const part of keys) {
+            const from = base + part.start - 1;
+            keyScratchA!.set(bufA.subarray(from, from + part.length), w);
+            w += part.length;
+          }
+        } else {
+          h = hashSource(A, base, keyScratchA, 0);
+        }
+        let slot = h & mask;
         for (;;) {
           const head = table[slot];
           if (head === 0) {
             break;
           }
-          if (head > 0 && sameKey(bufA, base, bufB, B.bodyOffset(rb[head - 1]))) {
+          if (head > 0 && sameKeyAB(base, head - 1, B.bodyOffset(rb[head - 1]))) {
             const j = head - 1;
             matchOfA[i] = j;
             matchedB[j] = 1;
@@ -378,9 +438,21 @@ export class CompareSession {
         stats.a++;
       } else {
         const len = A.bodyLength(ea);
-        const oa = A.bodyOffset(ea);
-        const ob = B.bodyOffset(eb);
-        if (len === B.bodyLength(eb) && nodeA.compare(nodeB, ob, ob + len, oa, oa + len) === 0) {
+        let eq = len === B.bodyLength(eb);
+        if (eq && len > 0) {
+          if (nodeA && nodeB) {
+            const oa = A.bodyOffset(ea);
+            const ob = B.bodyOffset(eb);
+            eq = nodeA.compare(nodeB, ob, ob + len, oa, oa + len) === 0;
+          } else {
+            const ba = A.body(ea);
+            const bb = B.body(eb);
+            eq = Buffer.from(ba.buffer, ba.byteOffset, ba.byteLength).compare(
+              Buffer.from(bb.buffer, bb.byteOffset, bb.byteLength)
+            ) === 0;
+          }
+        }
+        if (eq) {
           s = ST_SAME;
           stats.same++;
         } else {

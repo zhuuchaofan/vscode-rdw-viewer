@@ -1,14 +1,20 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { RdwSession, Discriminator, Group, discriminatorLabel } from './session';
+import { ByteSource, MemorySource, PagedFileSource } from './source';
+import { RdwSession, Discriminator, Group, discriminatorLabel, ERR_VIEW } from './session';
 import { t, setLocale, uiStrings } from './i18n';
 import { canExport, exportChunks, viewFileSuffix, DEFAULT_EXPORT_OPTIONS, ExportFormat } from './export';
 import { encodeShiftJis } from './sjisEncode';
-import { ERR_VIEW } from './session';
-import { parseCopybook, Copybook, selectRecord } from './copybook';
+import { parseCopybook, Copybook } from './copybook';
 import { MismatchMode } from './layout';
 import { CompareSession, KeyPart, MatchMode, keyLabel } from './compare';
+
+export const EDITOR_VIEW_TYPE = 'rdwViewer.editor';
+/** 本地文件大于该阈值时采用分页读取（不把整份文件载入内存） */
+const PAGED_FILE_THRESHOLD = 32 * 1024 * 1024;
+/** 文件大于该阈值时异步扫描并显示可取消进度通知 */
+const SCAN_PROGRESS_THRESHOLD = 64 * 1024 * 1024;
 
 const COPYBOOK_GLOB = '**/*.{cpy,CPY,cbl,CBL,cob,COB,copy,COPY}';
 const MAPPING_FILE = ['.vscode', 'rdw-viewer.json'];
@@ -591,39 +597,98 @@ interface LoadedSession {
   store: MappingStore;
   /** 按保存的设置重新分组、加载 copybook */
   applyMapping: () => Promise<void>;
+  /** 释放底层资源（分页文件描述符等） */
+  dispose: () => void;
 }
 
-/** 读取文件，建立会话并应用保存的 copybook 设置；失败时显示错误并返回 undefined */
-async function loadSession(ctx: vscode.ExtensionContext, uri: vscode.Uri): Promise<LoadedSession | undefined> {
-  let bytes: Uint8Array;
+/**
+ * 读取文件，建立会话并应用保存的 copybook 设置；失败或取消时返回 undefined。
+ * 本地大文件（>= 32MB）自动使用 PagedFileSource 分页按需读取，避免把数 GB 文件整块载入内存。
+ */
+async function loadSession(
+  ctx: vscode.ExtensionContext,
+  uri: vscode.Uri,
+  externalToken?: vscode.CancellationToken
+): Promise<LoadedSession | undefined> {
+  const fileName = path.basename(uri.fsPath);
+  let source: ByteSource;
   try {
-    bytes = await vscode.workspace.fs.readFile(uri);
+    if (uri.scheme === 'file') {
+      const stat = await fs.promises.stat(uri.fsPath);
+      if (stat.size >= PAGED_FILE_THRESHOLD) {
+        source = PagedFileSource.open(uri.fsPath);
+      } else {
+        source = new MemorySource(await fs.promises.readFile(uri.fsPath));
+      }
+    } else {
+      source = new MemorySource(await vscode.workspace.fs.readFile(uri));
+    }
   } catch (e) {
     vscode.window.showErrorMessage(t('ext.readFailed', { error: (e as Error).message }));
     return undefined;
   }
 
   const cfg = config();
-  const fileName = path.basename(uri.fsPath);
-  const session = new RdwSession(bytes, fileName, {
+  const sessionOpts = {
     encoding: cfg.encoding,
     mismatch: cfg.mismatch,
     binaryEndian: cfg.binaryEndian,
     comp5Endian: cfg.comp5Endian === 'followBinaryEndian' ? undefined : cfg.comp5Endian,
     floatFormat: cfg.floatFormat,
     autoPacked: cfg.autoPacked,
-  });
+  };
+
+  let session: RdwSession | undefined;
+  try {
+    if (source.size >= SCAN_PROGRESS_THRESHOLD) {
+      session = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: t('ext.openProgress', { name: fileName }),
+          cancellable: true,
+        },
+        (progress, token) => {
+          let shown = 0;
+          return RdwSession.createAsync(source, fileName, sessionOpts, {
+            isCancelled: () => token.isCancellationRequested || !!externalToken?.isCancellationRequested,
+            onProgress: (f) => {
+              const pct = Math.floor(f * 100);
+              if (pct > shown) {
+                progress.report({ increment: pct - shown });
+                shown = pct;
+              }
+            },
+          });
+        }
+      );
+      if (!session) {
+        source.close();
+        if (!externalToken?.isCancellationRequested) {
+          vscode.window.showInformationMessage(t('ext.openCancelled'));
+        }
+        return undefined;
+      }
+    } else {
+      session = new RdwSession(source, fileName, sessionOpts);
+    }
+  } catch (e) {
+    source.close();
+    vscode.window.showErrorMessage(t('ext.readFailed', { error: (e as Error).message }));
+    return undefined;
+  }
+
+  const activeSession = session;
   const folder = vscode.workspace.getWorkspaceFolder(uri) ?? vscode.workspace.workspaceFolders?.[0];
   const store = new MappingStore(ctx, folder);
 
   const loadInto = async (g: Group, stored: string | undefined, auto = false) => {
     if (!stored) {
-      session.setCopybook(g.length, null, undefined, g.value);
+      activeSession.setCopybook(g.length, null, undefined, g.value);
       return;
     }
     const cpyUri = auto ? vscode.Uri.parse(stored) : store.resolve(stored);
     try {
-      session.setCopybook(
+      activeSession.setCopybook(
         g.length,
         { name: path.basename(cpyUri.fsPath), copybook: await loadCopybook(cpyUri) },
         undefined,
@@ -631,24 +696,24 @@ async function loadSession(ctx: vscode.ExtensionContext, uri: vscode.Uri): Promi
         auto
       );
     } catch (e) {
-      session.setCopybook(g.length, null, t('ext.cpyReadFailed', { path: stored, error: (e as Error).message }), g.value);
+      activeSession.setCopybook(g.length, null, t('ext.cpyReadFailed', { path: stored, error: (e as Error).message }), g.value);
     }
   };
 
   const applyMapping = async () => {
-    const cfg = await store.read();
+    const mapCfg = await store.read();
     // 先确定分组（判别字段），再为每个分组加载 copybook
-    const lengths = new Set(session.groups.map((g) => g.length));
+    const lengths = new Set(activeSession.groups.map((g) => g.length));
     for (const len of lengths) {
-      const d = cfg.discriminators[String(len)];
-      session.setDiscriminator(len, d ? { start: d.start, length: d.length, type: d.type } : null);
+      const d = mapCfg.discriminators[String(len)];
+      activeSession.setDiscriminator(len, d ? { start: d.start, length: d.length, type: d.type } : null);
     }
     // 没有保存设置的长度：工作区中总长度一致的 copybook 只有一个时自动选择（不保存）
     let candidates: Array<{ uri: vscode.Uri; total: number }> | undefined;
-    for (const g of [...session.groups]) {
-      session.setLayoutSelection(g.length, cfg.layouts[layoutKey(g.length, g.value)] ?? {}, g.value);
+    for (const g of [...activeSession.groups]) {
+      activeSession.setLayoutSelection(g.length, mapCfg.layouts[layoutKey(g.length, g.value)] ?? {}, g.value);
       const stored =
-        g.value === undefined ? cfg.copybooks[String(g.length)] : cfg.discriminators[String(g.length)]?.copybooks[g.value];
+        g.value === undefined ? mapCfg.copybooks[String(g.length)] : mapCfg.discriminators[String(g.length)]?.copybooks[g.value];
       if (stored === undefined && g.value === undefined) {
         candidates ??= await scanCopybooks();
         const hits = candidates.filter((c) => c.total === g.length);
@@ -661,18 +726,22 @@ async function loadSession(ctx: vscode.ExtensionContext, uri: vscode.Uri): Promi
     }
   };
   await applyMapping();
-  return { session, fileName, store, applyMapping };
+  return {
+    session: activeSession,
+    fileName,
+    store,
+    applyMapping,
+    dispose: () => activeSession.close(),
+  };
 }
 
-/** 建立 webview 面板：先加载共用脚本 common.js，再加载 script */
-function createPanel(ctx: vscode.ExtensionContext, title: string, script: string): vscode.WebviewPanel {
+/** 配置 webview 资源权限与 HTML：先加载共用脚本 common.js，再加载 script */
+function setupWebview(ctx: vscode.ExtensionContext, web: vscode.Webview, script: string): void {
   const mediaRoot = vscode.Uri.joinPath(ctx.extensionUri, 'media');
-  const panel = vscode.window.createWebviewPanel('rdwViewer', title, vscode.ViewColumn.Active, {
+  web.options = {
     enableScripts: true,
-    retainContextWhenHidden: true,
     localResourceRoots: [mediaRoot],
-  });
-  const web = panel.webview;
+  };
   const nonce = Array.from({ length: 24 }, () => Math.floor(Math.random() * 36).toString(36)).join('');
   const common = web.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'common.js'));
   const js = web.asWebviewUri(vscode.Uri.joinPath(mediaRoot, script));
@@ -684,24 +753,29 @@ function createPanel(ctx: vscode.ExtensionContext, title: string, script: string
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="stylesheet" href="${css}"><title>RDW Viewer</title></head>
 <body><div id="app"></div><script nonce="${nonce}" src="${common}"></script><script nonce="${nonce}" src="${js}"></script></body></html>`;
+}
+
+/** 建立独立 webview 面板（供比较视图使用） */
+function createPanel(ctx: vscode.ExtensionContext, title: string, script: string): vscode.WebviewPanel {
+  const panel = vscode.window.createWebviewPanel('rdwViewer', title, vscode.ViewColumn.Active, {
+    enableScripts: true,
+    retainContextWhenHidden: true,
+    localResourceRoots: [vscode.Uri.joinPath(ctx.extensionUri, 'media')],
+  });
+  setupWebview(ctx, panel.webview, script);
   return panel;
 }
 
-async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Promise<void> {
-  let uri = target;
-  if (!uri) {
-    const res = await vscode.window.showOpenDialog({ canSelectMany: false, title: t('ext.selectRdwFile') });
-    uri = res?.[0];
-  }
-  if (!uri) {
-    return;
-  }
-  const loaded = await loadSession(ctx, uri);
-  if (!loaded) {
-    return;
-  }
-  const { session, store, applyMapping, fileName } = loaded;
-  const web = createPanel(ctx, `RDW: ${fileName}`, 'main.js').webview;
+/** 绑定单文件查看器面板的消息处理（供 Custom Editor 与命令打开共用） */
+function attachViewerPanel(
+  ctx: vscode.ExtensionContext,
+  panel: vscode.WebviewPanel,
+  uri: vscode.Uri,
+  loaded: LoadedSession
+): vscode.Disposable {
+  const { session, store, applyMapping } = loaded;
+  const web = panel.webview;
+  setupWebview(ctx, web, 'main.js');
 
   let gen = 0;
   const sendInit = () => {
@@ -715,7 +789,7 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
     });
   };
 
-  web.onDidReceiveMessage(async (msg) => {
+  return web.onDidReceiveMessage(async (msg) => {
     switch (msg.type) {
       case 'ready':
         sendInit();
@@ -818,6 +892,57 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
         break;
     }
   });
+}
+
+class RdwCustomDocument implements vscode.CustomDocument {
+  constructor(
+    readonly uri: vscode.Uri,
+    readonly loaded: LoadedSession
+  ) {}
+
+  dispose(): void {
+    this.loaded.dispose();
+  }
+}
+
+/**
+ * VS Code 原生只读自定义编辑器：支持「打开方式（Open With…）」、设置默认关联、分栏以及窗口重启恢复。
+ */
+class RdwEditorProvider implements vscode.CustomReadonlyEditorProvider<RdwCustomDocument> {
+  constructor(private readonly ctx: vscode.ExtensionContext) {}
+
+  async openCustomDocument(
+    uri: vscode.Uri,
+    _openContext: vscode.CustomDocumentOpenContext,
+    token: vscode.CancellationToken
+  ): Promise<RdwCustomDocument> {
+    const loaded = await loadSession(this.ctx, uri, token);
+    if (!loaded) {
+      throw vscode.CancellationError ? new vscode.CancellationError() : new Error('Cancelled');
+    }
+    return new RdwCustomDocument(uri, loaded);
+  }
+
+  async resolveCustomEditor(
+    document: RdwCustomDocument,
+    webviewPanel: vscode.WebviewPanel,
+    _token: vscode.CancellationToken
+  ): Promise<void> {
+    const sub = attachViewerPanel(this.ctx, webviewPanel, document.uri, document.loaded);
+    webviewPanel.onDidDispose(() => sub.dispose());
+  }
+}
+
+async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Promise<void> {
+  let uri = target;
+  if (!uri) {
+    const res = await vscode.window.showOpenDialog({ canSelectMany: false, title: t('ext.selectRdwFile') });
+    uri = res?.[0];
+  }
+  if (!uri) {
+    return;
+  }
+  await vscode.commands.executeCommand('vscode.openWith', uri, EDITOR_VIEW_TYPE);
 }
 
 /**
@@ -1034,7 +1159,12 @@ async function openCompare(ctx: vscode.ExtensionContext, a?: vscode.Uri, b?: vsc
 
 export function activate(ctx: vscode.ExtensionContext): void {
   setLocale(vscode.env.language);
+  const provider = new RdwEditorProvider(ctx);
   ctx.subscriptions.push(
+    vscode.window.registerCustomEditorProvider(EDITOR_VIEW_TYPE, provider, {
+      webviewOptions: { retainContextWhenHidden: true },
+      supportsMultipleEditorsPerDocument: false,
+    }),
     vscode.commands.registerCommand('rdwViewer.open', (uri?: vscode.Uri) => openViewer(ctx, uri)),
     // エクスプローラーで 2 ファイルを選択した場合は uris に両方が入る
     vscode.commands.registerCommand('rdwViewer.compare', (uri?: vscode.Uri, uris?: vscode.Uri[]) => {

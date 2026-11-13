@@ -35,6 +35,18 @@
   "main": "./out/src/extension.js",
   "activationEvents": [],
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "rdwViewer.editor",
+        "displayName": "%editor.displayName%",
+        "selector": [
+          {
+            "filenamePattern": "*.{dat,DAT,rdw,RDW}"
+          }
+        ],
+        "priority": "option"
+      }
+    ],
     "commands": [
       {
         "command": "rdwViewer.open",

@@ -1,5 +1,6 @@
 {
   "displayName": "RDW Viewer",
+  "editor.displayName": "RDW Viewer",
   "description": "RDW（前後 4 バイト・リトルエンディアン）付き可変長レコードファイルのビューアー。COBOL の COPY句による項目表示、COMP-3 のデコードに対応",
   "command.open": "RDW Viewer で開く",
   "config.title": "RDW Viewer",

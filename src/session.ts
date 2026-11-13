@@ -1,12 +1,12 @@
 /**
- * 一个已打开文件的数据模型：持有文件内容、RDW 索引、按长度分组的结果，
+ * 一个已打开文件的数据模型：持有字节数据源（内存或分页大文件）、RDW 索引、按长度分组的结果，
  * 并按需（虚拟滚动）解码出行数据。不依赖 VS Code，便于测试。
  */
 import { t } from './i18n';
-import { RdwIndex, scanRdw, RDW_SIZE } from './rdw';
-import { Copybook } from './copybook';
+import { ByteSource, toByteSource } from './source';
+import { RdwIndex, ScanProgress, scanRdw, scanRdwAsync, RDW_SIZE } from './rdw';
+import { Copybook, LayoutSelection } from './copybook';
 import { Banner, Column, LayoutChoice, MismatchMode, buildColumns, displayWidth } from './layout';
-import { LayoutSelection } from './copybook';
 import { SUPPORTED_ENCODINGS, createDecoder, dumpChars, sanitize, toHex } from './decode';
 import { decodePacked, decodeNumeric, decodeZoned, NumericOptions } from './numeric';
 import { segmentBody, formatSegments, plainSegments } from './autodetect';
@@ -25,6 +25,17 @@ export function discriminatorLabel(d: Discriminator): string {
 }
 
 type CopybookRef = { name: string; copybook: Copybook };
+
+export interface SessionOptions {
+  encoding?: string;
+  mismatch?: MismatchMode;
+  /** COMP / COMP-4 / BINARY 的字节序 */
+  binaryEndian?: 'big' | 'little';
+  /** COMP-5 / COMP-1 / COMP-2 的字节序；省略时与 binaryEndian 相同 */
+  comp5Endian?: 'big' | 'little';
+  floatFormat?: 'ieee' | 'ibm';
+  autoPacked?: boolean;
+}
 
 export interface Group {
   key: string;
@@ -147,7 +158,111 @@ export const ORDER_VIEW = 'ORDER';
 
 const fmtOffset = (n: number): string => '0x' + n.toString(16).toUpperCase().padStart(8, '0');
 
+/**
+ * 针对单个判别字段的字节级去重解码缓存（开放定址哈希表）：
+ * 判别字段通常只有寥寥几种取值（如 '01'/'02'/'03' 或几个 COMP-3 代码），
+ * 用原始字节直接命中已解码的字符串，避免百万条记录重复调用 TextDecoder / trimEnd / 正则替换。
+ */
+class DiscValueCache {
+  private cap = 64;
+  private size = 0;
+  private hashes = new Uint32Array(64);
+  private used = new Uint8Array(64);
+  private rawKeys: Uint8Array[] = new Array(64);
+  private values: string[] = new Array(64);
+
+  constructor(
+    private readonly d: Discriminator,
+    private readonly decoder: TextDecoder
+  ) {}
+
+  private decode(bytes: Uint8Array): string {
+    if (this.d.type === 'comp3') {
+      const signed = (bytes[bytes.length - 1] & 0x0f) !== 0xf;
+      const r = decodePacked(bytes, 0, signed);
+      return r.ok ? r.text : t('disc.invalid', { hex: toHex(bytes) });
+    }
+    return sanitize(this.decoder.decode(bytes)).trimEnd() || t('disc.blank');
+  }
+
+  private grow(): void {
+    const oldCap = this.cap;
+    const oldHashes = this.hashes;
+    const oldUsed = this.used;
+    const oldKeys = this.rawKeys;
+    const oldVals = this.values;
+
+    this.cap = oldCap * 2;
+    this.hashes = new Uint32Array(this.cap);
+    this.used = new Uint8Array(this.cap);
+    this.rawKeys = new Array(this.cap);
+    this.values = new Array(this.cap);
+    const mask = this.cap - 1;
+
+    for (let i = 0; i < oldCap; i++) {
+      if (!oldUsed[i]) continue;
+      let slot = oldHashes[i] & mask;
+      while (this.used[slot]) {
+        slot = (slot + 1) & mask;
+      }
+      this.used[slot] = 1;
+      this.hashes[slot] = oldHashes[i];
+      this.rawKeys[slot] = oldKeys[i];
+      this.values[slot] = oldVals[i];
+    }
+  }
+
+  get(bytes: Uint8Array): string {
+    const len = bytes.length;
+    let h = 0x811c9dc5;
+    for (let i = 0; i < len; i++) {
+      h = Math.imul(h ^ bytes[i], 0x01000193);
+    }
+    h >>>= 0;
+
+    let mask = this.cap - 1;
+    let slot = h & mask;
+    while (this.used[slot]) {
+      if (this.hashes[slot] === h) {
+        const k = this.rawKeys[slot];
+        if (k.length === len) {
+          let eq = true;
+          for (let i = 0; i < len; i++) {
+            if (k[i] !== bytes[i]) {
+              eq = false;
+              break;
+            }
+          }
+          if (eq) {
+            return this.values[slot];
+          }
+        }
+      }
+      slot = (slot + 1) & mask;
+    }
+
+    const val = this.decode(bytes);
+    // 拷贝一份独立字节作为缓存键（分页源返回的视图可能被复用覆盖）
+    const copy = bytes.slice();
+    if ((this.size + 1) * 2 >= this.cap) {
+      this.grow();
+      mask = this.cap - 1;
+      slot = h & mask;
+      while (this.used[slot]) {
+        slot = (slot + 1) & mask;
+      }
+    }
+    this.used[slot] = 1;
+    this.hashes[slot] = h;
+    this.rawKeys[slot] = copy;
+    this.values[slot] = val;
+    this.size++;
+    return val;
+  }
+}
+
 export class RdwSession {
+  readonly source: ByteSource;
   readonly index: RdwIndex;
   readonly groups: Group[] = [];
   /** 长度 → 判别字段 */
@@ -166,19 +281,12 @@ export class RdwSession {
   private autoPacked: boolean;
 
   constructor(
-    private readonly buf: Uint8Array,
+    input: Uint8Array | ByteSource,
     private readonly fileName: string,
-    opts: {
-      encoding?: string;
-      mismatch?: MismatchMode;
-      /** COMP / COMP-4 / BINARY 的字节序 */
-      binaryEndian?: 'big' | 'little';
-      /** COMP-5 / COMP-1 / COMP-2 的字节序；省略时与 binaryEndian 相同 */
-      comp5Endian?: 'big' | 'little';
-      floatFormat?: 'ieee' | 'ibm';
-      autoPacked?: boolean;
-    } = {}
+    opts: SessionOptions = {},
+    precomputedIndex?: RdwIndex
   ) {
+    this.source = toByteSource(input);
     this.encoding = opts.encoding ?? 'shift_jis';
     this.decoder = createDecoder(this.encoding) ?? createDecoder('shift_jis')!;
     if (!createDecoder(this.encoding)) {
@@ -192,23 +300,57 @@ export class RdwSession {
       floatFormat: opts.floatFormat ?? 'ieee',
     };
     this.autoPacked = opts.autoPacked ?? true;
-    this.index = scanRdw(buf);
+    this.index = precomputedIndex ?? scanRdw(this.source);
     this.entryGroup = new Int32Array(this.index.count).fill(-1);
     this.buildGroups();
+  }
+
+  /**
+   * 异步创建会话（在扫描超大文件时定期交还事件循环、支持进度显示与取消）。
+   * 若取消则返回 undefined（注意调用方应自行 close 传入的 ByteSource）。
+   */
+  static async createAsync(
+    input: Uint8Array | ByteSource,
+    fileName: string,
+    opts: SessionOptions = {},
+    progress: ScanProgress = {}
+  ): Promise<RdwSession | undefined> {
+    const src = toByteSource(input);
+    const index = await scanRdwAsync(src, progress);
+    if (!index) {
+      return undefined;
+    }
+    return new RdwSession(src, fileName, opts, index);
+  }
+
+  /** 关闭底层文件句柄（内存模式下无操作） */
+  close(): void {
+    this.source.close();
   }
 
   static groupKey(length: number, value?: string): string {
     return value === undefined ? `L${length}` : `L${length}=${value}`;
   }
 
-  /** 读取判别字段的值（COMP-3 解码成数值，文字去掉末尾空格） */
-  private discValue(entry: number, d: Discriminator): string {
+  private discCaches(): Map<number, DiscValueCache> {
+    const caches = new Map<number, DiscValueCache>();
+    for (const [len, d] of this.discriminators) {
+      caches.set(len, new DiscValueCache(d, this.decoder));
+    }
+    return caches;
+  }
+
+  /** 读取判别字段的值（优先走字节哈希缓存，避免大量记录重复解码） */
+  private discValue(entry: number, d: Discriminator, cache?: DiscValueCache): string {
     const bodyLen = this.index.lengths[entry];
     if (d.start - 1 + d.length > bodyLen) {
       return t('disc.outOfRange');
     }
     const base = this.index.offsets[entry] + RDW_SIZE + d.start - 1;
-    const bytes = this.buf.subarray(base, base + d.length);
+    const bytes = this.source.read(base, d.length);
+    if (cache) {
+      return cache.get(bytes);
+    }
     if (d.type === 'comp3') {
       const signed = (bytes[bytes.length - 1] & 0x0f) !== 0xf;
       const r = decodePacked(bytes, 0, signed);
@@ -219,32 +361,64 @@ export class RdwSession {
 
   private buildGroups(): void {
     const { index } = this;
-    const byKey = new Map<string, { length: number; value?: string; list: number[] }>();
-    const errs: number[] = [];
-    for (let e = 0; e < index.count; e++) {
+    const total = index.count;
+    const caches = this.discriminators.size > 0 ? this.discCaches() : undefined;
+
+    // 第一遍：确定每个条目的分组下标与各分组容量（用 TypedArray 代替巨型 number[] 列表）
+    const byKey = new Map<string, { gi: number; length: number; value?: string; count: number }>();
+    let errCount = 0;
+    for (let e = 0; e < total; e++) {
       if (index.isError[e]) {
-        errs.push(e);
+        this.entryGroup[e] = -1;
+        errCount++;
         continue;
       }
       const length = index.lengths[e];
       const d = this.discriminators.get(length);
-      const value = d ? this.discValue(e, d) : undefined;
+      const value = d ? this.discValue(e, d, caches?.get(length)) : undefined;
       const key = RdwSession.groupKey(length, value);
       let slot = byKey.get(key);
       if (!slot) {
-        slot = { length, value, list: [] };
+        slot = { gi: byKey.size, length, value, count: 0 };
         byKey.set(key, slot);
       }
-      slot.list.push(e);
+      slot.count++;
+      this.entryGroup[e] = slot.gi;
     }
-    this.errorEntries = Uint32Array.from(errs);
+
+    // 预分配精确大小的 TypedArray
+    this.errorEntries = new Uint32Array(errCount);
+    const groupEntries: Uint32Array[] = [];
+    const groupCursors = new Uint32Array(byKey.size);
+    for (const [, slot] of byKey) {
+      groupEntries.push(new Uint32Array(slot.count));
+    }
+
+    // 第二遍：填充 entries 与计算 ORDER 视图的总行数
+    let errPos = 0;
+    let orderLen = 0;
+    let lastGi = -1;
+    for (let e = 0; e < total; e++) {
+      const gi = this.entryGroup[e];
+      if (gi < 0) {
+        this.errorEntries[errPos++] = e;
+      } else {
+        groupEntries[gi][groupCursors[gi]++] = e;
+        if (gi !== lastGi) {
+          orderLen += 3;
+          lastGi = gi;
+        }
+      }
+      orderLen++;
+    }
+
     for (const [key, slot] of byKey) {
       const a = this.assigned.get(key);
       const g: Group = {
         key,
         length: slot.length,
         value: slot.value,
-        entries: Uint32Array.from(slot.list),
+        entries: groupEntries[slot.gi],
         copybook: a?.ref ?? null,
         loadError: a?.loadError,
         auto: !!a?.auto,
@@ -254,27 +428,24 @@ export class RdwSession {
         choices: [],
       };
       this.groups.push(g);
-      const gi = this.groups.length - 1;
-      for (const e of slot.list) {
-        this.entryGroup[e] = gi;
-      }
       this.refreshGroup(g);
     }
 
-    // 文件顺序视图：分组（即 copybook）切换时插入 3 行表头
-    const display: number[] = [];
-    let lastGi = -1;
-    for (let e = 0; e < index.count; e++) {
+    // 文件顺序视图：分组（即 copybook）切换时插入 3 行表头（直接写入 Int32Array，零中间数组）
+    const display = new Int32Array(orderLen);
+    let dp = 0;
+    lastGi = -1;
+    for (let e = 0; e < total; e++) {
       const gi = this.entryGroup[e];
       if (gi >= 0 && gi !== lastGi) {
         for (let k = 0; k < 3; k++) {
-          display.push(-1 - (gi * 3 + k));
+          display[dp++] = -1 - (gi * 3 + k);
         }
         lastGi = gi;
       }
-      display.push(e);
+      display[dp++] = e;
     }
-    this.displayRows = Int32Array.from(display);
+    this.displayRows = display;
   }
 
   private rebuild(): void {
@@ -400,9 +571,10 @@ export class RdwSession {
   /** 预览：某个长度的记录在判别字段上有哪些值、各多少条（按条数从多到少） */
   discriminatorValues(length: number, d: Discriminator): Array<{ value: string; count: number }> {
     const counts = new Map<string, number>();
+    const cache = new DiscValueCache(d, this.decoder);
     for (let e = 0; e < this.index.count; e++) {
       if (!this.index.isError[e] && this.index.lengths[e] === length) {
-        const v = this.discValue(e, d);
+        const v = this.discValue(e, d, cache);
         counts.set(v, (counts.get(v) ?? 0) + 1);
       }
     }
@@ -466,7 +638,7 @@ export class RdwSession {
   /** 某条记录中某一列的字节 */
   slice(entry: number, col: Column): Uint8Array {
     const base = this.index.offsets[entry] + RDW_SIZE + (col.start - 1);
-    return this.buf.subarray(base, base + col.len);
+    return this.source.read(base, col.len);
   }
 
   /** 单元格的显示文字和是否标橙 */
@@ -492,13 +664,14 @@ export class RdwSession {
       return { text: formatSegments(bytes, segmentBody(bytes, sjis), this.decoder).trimEnd(), warn: false };
     }
     const raw = this.decoder.decode(bytes);
-    let warn = col.kind === 'partial' || col.kind === 'extra' || raw.includes('�');
+    let warn = col.kind === 'partial' || col.kind === 'extra' || raw.includes('\ufffd');
     if (col.type === 'num' && col.kind !== 'partial' && !decodeZoned(bytes, col).ok) {
       // 外部十进制：空格、符号位置错误等都视为非法（原样显示并标橙）
       warn = true;
     }
-    // 整条正文列不显示末尾空格（避免撑出大片空白；完整内容可点击单元格查看）
-    return { text: col.kind === 'body' ? sanitize(raw).trimEnd() : sanitize(raw), warn };
+    // 整条正文（关闭自动识别时）去掉末尾空格，避免右侧大片空白；拆分的字段保留原始长度以便看清补位
+    const text = sanitize(raw);
+    return { text: col.kind === 'body' ? text.trimEnd() : text, warn };
   }
 
   private recRow(g: Group, entry: number): RecRow {
@@ -595,9 +768,9 @@ export class RdwSession {
     return gi >= 0 ? this.groups[gi] : undefined;
   }
 
-  /** 文件的全部字节（配合 bodyOffset / bodyLength 直接访问，避免为每条记录创建子数组） */
-  get raw(): Uint8Array {
-    return this.buf;
+  /** 若数据源为完整内存缓冲区则直接返回（供零拷贝加速），分页文件模式下为 undefined */
+  get raw(): Uint8Array | undefined {
+    return this.source.raw;
   }
 
   /** 记录正文在文件中的起始偏移 */
@@ -612,16 +785,18 @@ export class RdwSession {
 
   /** 记录正文 */
   body(entry: number): Uint8Array {
-    const base = this.index.offsets[entry] + RDW_SIZE;
-    return this.buf.subarray(base, base + this.index.lengths[entry]);
+    return this.source.read(this.index.offsets[entry] + RDW_SIZE, this.index.lengths[entry]);
   }
 
-  /** 正常记录（非错误条目）的条目序号，按文件顺序 */
-  recordEntries(): number[] {
-    const out: number[] = [];
-    for (let e = 0; e < this.index.count; e++) {
+  /** 正常记录（非错误条目）的条目序号，按文件顺序返回紧凑的 Uint32Array */
+  recordEntries(): Uint32Array {
+    const total = this.index.count;
+    const okCount = total - this.errorEntries.length;
+    const out = new Uint32Array(okCount);
+    let p = 0;
+    for (let e = 0; e < total; e++) {
       if (!this.index.isError[e]) {
-        out.push(e);
+        out[p++] = e;
       }
     }
     return out;
@@ -635,7 +810,7 @@ export class RdwSession {
     const offset = this.index.offsets[entry];
     if (this.index.isError[entry]) {
       const len = Math.min(this.index.lengths[entry], DUMP_ERROR_LIMIT);
-      const bytes = this.buf.subarray(offset, offset + len);
+      const bytes = this.source.read(offset, len).slice();
       return {
         entry,
         offset,
@@ -650,8 +825,12 @@ export class RdwSession {
       };
     }
     const g = this.groupOfEntry(entry)!;
-    const body = this.body(entry);
-    const end = offset + RDW_SIZE + body.length;
+    const bodyLen = this.index.lengths[entry];
+    // 先分别拷贝前后 RDW 与正文，避免跨页读取时共享暂存缓冲区互相覆盖
+    const front = toHex(this.source.read(offset, RDW_SIZE));
+    const end = offset + RDW_SIZE + bodyLen;
+    const back = toHex(this.source.read(end, RDW_SIZE));
+    const body = this.body(entry).slice();
     const fields: DumpField[] = [];
     g.columns.forEach((c, i) => {
       if (c.kind !== 'missing' && c.len > 0) {
@@ -663,8 +842,8 @@ export class RdwSession {
       offset,
       groupKey: g.key,
       error: null,
-      front: toHex(this.buf.subarray(offset, offset + RDW_SIZE)),
-      back: toHex(this.buf.subarray(end, end + RDW_SIZE)),
+      front,
+      back,
       bytes: Array.from(body),
       chars: dumpChars(body, this.decoder),
       fields,
