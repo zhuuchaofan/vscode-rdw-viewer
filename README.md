@@ -162,14 +162,14 @@ COPY句が未指定のレコードは「レコード全体」の 1 列で表示�
 | `COMP-1` / `COMP-2` | 浮動小数点。`rdwViewer.floatFormat` で IEEE 754 / IBM 16 進浮動小数点 | NaN・無限大、長さ不正 | — |
 | `DISPLAY`（ゾーン 10 進） | 画面は元の文字のまま。セルをクリックすると数値を表示 | 空白・小数点など数字以外、符号の位置・文字が不正 | — |
 
-ゾーン 10 進の符号：`SIGN SEPARATE` は `+` / `-`。符号が数字に含まれる場合は、ASCII 環境の `p`〜`y`（負）と、EBCDIC から変換した `{A`〜`I`（正）・`}J`〜`R`（負）を受け付けます。
+ゾーン 10 進の符号：`SIGN SEPARATE` は `+` / `-`。符号が数字に含まれる場合は富士通 NetCOBOL の内部表現に従い、符号を持つ桁の上位 4 ビットが `4`（`@A`〜`I`）なら正、`5`（`P`〜`Y`）なら負です（例：`+6789` = `36 37 38 49`、`-6789` = `36 37 38 59`）。他のコンパイラーの形式（`p`〜`y`、EBCDIC から変換した `{A`〜`I` / `}J`〜`R`）は不正として扱います。
 
 プラットフォームごとの目安：
 
 | 作成環境 | `binaryEndian` | `comp5Endian` | `floatFormat` |
 | --- | --- | --- | --- |
 | メインフレーム（IBM など、EBCDIC から変換） | `big` | `big` | `ibm` |
-| Windows / Linux（x86）の COBOL | `big`（多くのコンパイラーの既定） | `little` | `ieee` |
+| Windows / Linux（x86）の NetCOBOL（既定値） | `big` | `little` | `ieee` |
 
 ## 設定
 
@@ -178,7 +178,7 @@ COPY句が未指定のレコードは「レコード全体」の 1 列で表示�
 | `rdwViewer.encoding` | `shift_jis` | 既定の文字コード |
 | `rdwViewer.lengthMismatch` | `lenient` | 長さ不一致時の扱い |
 | `rdwViewer.binaryEndian` | `big` | `COMP` / `COMP-4` / `BINARY` 項目のバイト順（COMP-3 には影響しません） |
-| `rdwViewer.comp5Endian` | `followBinaryEndian` | `COMP-5` と `COMP-1` / `COMP-2` のバイト順（`big` / `little` / binaryEndian と同じ） |
+| `rdwViewer.comp5Endian` | `little` | `COMP-5` と `COMP-1` / `COMP-2` のバイト順（`big` / `little` / binaryEndian と同じ） |
 | `rdwViewer.floatFormat` | `ieee` | `COMP-1` / `COMP-2` の形式（`ieee` / `ibm`） |
 | `rdwViewer.autoDetectPacked` | `true` | COPY句がない場合に COMP-3 を自動判別 |
 | `rdwViewer.exportEncoding` | `shift_jis` | エクスポートの文字コード（`shift_jis` / `utf-8-bom`） |

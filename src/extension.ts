@@ -170,7 +170,7 @@ function config() {
     mismatch: c.get<MismatchMode>('lengthMismatch', 'lenient'),
     hiddenPattern: c.get<string>('hiddenFieldPattern', '^FILLER$'),
     binaryEndian: c.get<'big' | 'little'>('binaryEndian', 'big'),
-    comp5Endian: c.get<'followBinaryEndian' | 'big' | 'little'>('comp5Endian', 'followBinaryEndian'),
+    comp5Endian: c.get<'followBinaryEndian' | 'big' | 'little'>('comp5Endian', 'little'),
     floatFormat: c.get<'ieee' | 'ibm'>('floatFormat', 'ieee'),
     autoPacked: c.get<boolean>('autoDetectPacked', true),
     exportEncoding: c.get<'shift_jis' | 'utf-8-bom'>('exportEncoding', 'shift_jis'),

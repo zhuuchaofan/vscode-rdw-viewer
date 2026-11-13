@@ -162,14 +162,14 @@ REDEFINES 的原项目与重定义项目共用同一块区域，区域长度取�
 | `COMP-1` / `COMP-2` | 浮点数；`rdwViewer.floatFormat` 选择 IEEE 754 或 IBM 十六进制浮点 | NaN、无穷大、长度不对 | — |
 | `DISPLAY`（外部十进制） | 表格中显示原始字符；点击单元格显示数值 | 空格、小数点等非数字字符，符号位置或字符不对 | — |
 
-外部十进制的符号：`SIGN SEPARATE` 为 `+` / `-`；符号嵌入数字时，接受 ASCII 环境的 `p`~`y`（负），以及 EBCDIC 转换后的 `{A`~`I`（正）、`}J`~`R`（负）。
+外部十进制的符号：`SIGN SEPARATE` 为 `+` / `-`；符号嵌入数字时按富士通 NetCOBOL 的内部表现，带符号那一位的高 4 位为 `4`（`@A`~`I`）是正、`5`（`P`~`Y`）是负（例：`+6789` = `36 37 38 49`，`-6789` = `36 37 38 59`）。其他编译器的写法（`p`~`y`、EBCDIC 转换后的 `{A`~`I` / `}J`~`R`）视为非法。
 
 不同平台的参考设置：
 
 | 数据来源 | `binaryEndian` | `comp5Endian` | `floatFormat` |
 | --- | --- | --- | --- |
 | 大型机（IBM 等，从 EBCDIC 转换） | `big` | `big` | `ibm` |
-| Windows / Linux（x86）上的 COBOL | `big`（多数编译器的默认） | `little` | `ieee` |
+| Windows / Linux（x86）上的 NetCOBOL（默认值） | `big` | `little` | `ieee` |
 
 copybook 总长度与记录长度对不上时，点提示条「⋯」菜单中的「**解析详情**」，会在编辑器中列出每个字段的位置、长度、属性以及解析提示，方便对照 copybook 原文找出差异。
 
@@ -180,7 +180,7 @@ copybook 总长度与记录长度对不上时，点提示条「⋯」菜单中�
 | `rdwViewer.encoding` | `shift_jis` | 默认字符编码 |
 | `rdwViewer.lengthMismatch` | `lenient` | 长度不一致时的处理方式 |
 | `rdwViewer.binaryEndian` | `big` | `COMP` / `COMP-4` / `BINARY` 字段的字节序（COMP-3 不受影响） |
-| `rdwViewer.comp5Endian` | `followBinaryEndian` | `COMP-5` 和 `COMP-1` / `COMP-2` 的字节序（`big` / `little` / 与 binaryEndian 相同） |
+| `rdwViewer.comp5Endian` | `little` | `COMP-5` 和 `COMP-1` / `COMP-2` 的字节序（`big` / `little` / 与 binaryEndian 相同） |
 | `rdwViewer.floatFormat` | `ieee` | `COMP-1` / `COMP-2` 的格式（`ieee` / `ibm`） |
 | `rdwViewer.autoDetectPacked` | `true` | 没有 copybook 时自动识别 COMP-3 |
 | `rdwViewer.exportEncoding` | `shift_jis` | 导出文件的编码（`shift_jis` / `utf-8-bom`） |

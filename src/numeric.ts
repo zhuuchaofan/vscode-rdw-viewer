@@ -95,7 +95,7 @@ function formatFloat(n: number, single: boolean): string {
 export interface NumericOptions {
   /** COMP / COMP-4 / BINARY 是否小端（IBM、富士通等通常为大端） */
   binaryLittleEndian: boolean;
-  /** COMP-5（本地格式）是否小端（x86 上为小端，大型机为大端） */
+  /** COMP-5（本地格式）是否小端（NetCOBOL 在 Windows / Linux 上为小端） */
   comp5LittleEndian: boolean;
   /** COMP-1 / COMP-2 的浮点格式：IEEE 754 或 IBM 十六进制浮点 */
   floatFormat: 'ieee' | 'ibm';
@@ -195,9 +195,11 @@ export function decodeByUsage(
  * 外部十进制（USAGE DISPLAY 的数字项目）：校验并取出数值。
  *  - 无符号：全部为 0~9
  *  - SIGN SEPARATE：符号字节必须是 + 或 -（LEADING 在前，否则在后）
- *  - 符号嵌入（默认在末位，LEADING 时在首位）：
- *      0~9 → 正；p~y（0x70~0x79，ASCII 环境的负号）→ 负；
- *      {、A~I → 正，}、J~R → 负（EBCDIC 数据转为 ASCII 后的写法）
+ *  - 符号嵌入（默认在末位，LEADING 时在首位）：按富士通 NetCOBOL 的内部表现
+ *    （COBOL 文法書 5.4.15 USAGE 句），符号在该字节的高 4 位：
+ *      0x40~0x49 → 正（+6789 = 36 37 38 49）；0x50~0x59 → 负（-6789 = 36 37 38 59）；
+ *      0x30~0x39（无符号的区位）也按正数接受。
+ *    其他编译器 / EBCDIC 转换后的写法（p~y、{A~I、}J~R）不支持，视为非法。
  *  空格、小数点等都视为非法。
  */
 export function decodeZoned(bytes: Uint8Array, f: NumericField): NumericResult {
@@ -224,13 +226,10 @@ export function decodeZoned(bytes: Uint8Array, f: NumericField): NumericResult {
     const signByte = f.signed && !f.signSeparate && i === (f.signLeading ? from : to - 1);
     if (b >= 0x30 && b <= 0x39) {
       digits += String.fromCharCode(b);
-    } else if (signByte && b >= 0x70 && b <= 0x79) {
-      digits += String(b - 0x70);
-      negative = true;
-    } else if (signByte && (b === 0x7b || (b >= 0x41 && b <= 0x49))) {
-      digits += b === 0x7b ? '0' : String(b - 0x40);
-    } else if (signByte && (b === 0x7d || (b >= 0x4a && b <= 0x52))) {
-      digits += b === 0x7d ? '0' : String(b - 0x49);
+    } else if (signByte && b >= 0x40 && b <= 0x49) {
+      digits += String(b - 0x40);
+    } else if (signByte && b >= 0x50 && b <= 0x59) {
+      digits += String(b - 0x50);
       negative = true;
     } else {
       return { text: '', ok: false };

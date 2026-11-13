@@ -97,15 +97,15 @@ test('严格模式：长度不一致时不拆分', () => {
 
 test('数字字段含非数字 → 标橙；符号嵌入末位不报', () => {
   const s = session(
-    Buffer.concat([rec(ascii('AB,12X')), rec(ascii('AB,12J')), rec(ascii('AB,123'))]),
+    Buffer.concat([rec(ascii('AB,12Z')), rec(ascii('AB,12Q')), rec(ascii('AB,123'))]),
   );
   s.setCopybook(6, {
     name: 'n.cpy',
     copybook: parseCopybook('01 R. 05 A PIC X(2). 05 S PIC X. 05 N PIC S9(3).'),
   });
   const rows = s.getRows('L6', 0, 3) as RecRow[];
-  assert.deepEqual(rows[0].w, [2]); // X 不是合法的 overpunch 字符
-  assert.deepEqual(rows[1].w, []); // J = -1 的 overpunch
+  assert.deepEqual(rows[0].w, [2]); // Z（0x5A）不是合法的符号位
+  assert.deepEqual(rows[1].w, []); // Q（0x51）= -1（NetCOBOL：高 4 位 5 为负）
   assert.deepEqual(rows[2].w, []);
 });
 
@@ -306,12 +306,12 @@ test('数值设置：COMP 大端、COMP-5 小端、IBM 浮点；可疑值标橙'
 
 test('外部十进制：空格标橙；单元格详情显示解码后的数值', () => {
   const cb = parseCopybook('01 R. 05 AMT PIC S9(5)V99. 05 CNT PIC 9(3).');
-  const s = session(Buffer.concat([rec(ascii('001234s 12')), rec(ascii('0012345012'))]));
+  const s = session(Buffer.concat([rec(ascii('001234S 12')), rec(ascii('0012345012'))]));
   s.setCopybook(10, { name: 'z.cpy', copybook: cb });
   const rows = s.getRows('L10', 0, 2) as RecRow[];
-  assert.deepEqual(rows[0].c, ['001234s', ' 12']);
+  assert.deepEqual(rows[0].c, ['001234S', ' 12']);
   assert.deepEqual(rows[0].w, [1]); // CNT 含空格
-  assert.equal(s.cellInfo('L10', 0, 0)!.value, '-123.43'); // s = 0x73 → 末位 3、负号
+  assert.equal(s.cellInfo('L10', 0, 0)!.value, '-123.43'); // S = 0x53 → 末位 3、负号
   assert.equal(s.cellInfo('L10', 1, 0)!.value, '+123.45');
   assert.equal(s.cellInfo('L10', 0, 1)!.value, undefined); // 非法时不显示数值
 });

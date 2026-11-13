@@ -79,18 +79,36 @@ test('外部十进制：无符号、小数位；空格、小数点等 → 非法
   assert.equal(zoned('-0123', { signed: false }).ok, false); // 无符号项目不能有符号
 });
 
-test('外部十进制：符号嵌入末位（ASCII 环境 p~y、EBCDIC 转换后的 {A-I} / }J-R）', () => {
-  assert.equal(zoned('00123', { signed: true }).text, '+123');
-  assert.equal(zoned('0012s', { signed: true }).text, '-123'); // 0x73 → -3
-  assert.equal(zoned('0012p', { signed: true }).text, '-120');
+test('外部十进制：符号嵌入（NetCOBOL：高 4 位 4=正、5=负）', () => {
+  const s4 = { usage: 'DISPLAY', scale: 0, digits: 4, signed: true };
+  // COBOL 文法書 5.4.15 USAGE 句「数字項目の内部表現」的例子
+  assert.equal(decodeZoned(hexBytes('36 37 38 39'), { ...s4, signed: false }).text, '6789');
+  assert.equal(decodeZoned(hexBytes('36 37 38 49'), s4).text, '+6789');
+  assert.equal(decodeZoned(hexBytes('36 37 38 59'), s4).text, '-6789');
+  assert.equal(decodeZoned(hexBytes('46 37 38 39'), { ...s4, signLeading: true }).text, '+6789');
+  assert.equal(decodeZoned(hexBytes('56 37 38 39'), { ...s4, signLeading: true }).text, '-6789');
+  // 末位为 0~9 的每个数字
+  for (let d = 0; d <= 9; d++) {
+    assert.equal(decodeZoned(Uint8Array.from([0x31, 0x40 + d]), s4).text, `+1${d}`);
+    assert.equal(decodeZoned(Uint8Array.from([0x31, 0x50 + d]), s4).text, `-1${d}`);
+  }
+  assert.equal(zoned('00123', { signed: true }).text, '+123'); // 区位 3 也按正数接受
   assert.equal(zoned('0012C', { signed: true }).text, '+123');
-  assert.equal(zoned('0012{', { signed: true }).text, '+120');
-  assert.equal(zoned('0012L', { signed: true }).text, '-123');
-  assert.equal(zoned('0012}', { signed: true }).text, '-120');
-  assert.equal(zoned('0012X', { signed: true }).ok, false);
-  assert.equal(zoned('0J123', { signed: true }).ok, false); // 符号只能在末位
-  assert.equal(zoned('J0123', { signed: true, signLeading: true }).text, '-10123'); // LEADING：首位
+  assert.equal(zoned('0012S', { signed: true }).text, '-123');
+  assert.equal(zoned('0012@', { signed: true }).text, '+120');
+  assert.equal(zoned('0012P', { signed: true }).text, '-120');
   assert.equal(zoned('12345', { signed: true, scale: 2 }).text, '+123.45');
+  assert.equal(zoned('0S123', { signed: true }).ok, false); // 符号只能在末位
+  assert.equal(zoned('0012S', { signed: true, signLeading: true }).ok, false); // LEADING：只能在首位
+  assert.equal(zoned('0012S', { signed: false }).ok, false); // 无符号项目不能有符号
+  assert.equal(zoned('0012J', { signed: true }).ok, false); // 0x4A~0x4F、0x5A~0x5F 非法
+  assert.equal(zoned('0012Z', { signed: true }).ok, false);
+});
+
+test('外部十进制：其他编译器的符号写法视为非法', () => {
+  assert.equal(zoned('0012s', { signed: true }).ok, false); // 0x73（p~y）
+  assert.equal(zoned('0012{', { signed: true }).ok, false);
+  assert.equal(zoned('0012}', { signed: true }).ok, false);
 });
 
 test('外部十进制：SIGN SEPARATE（LEADING / TRAILING）', () => {
@@ -99,5 +117,5 @@ test('外部十进制：SIGN SEPARATE（LEADING / TRAILING）', () => {
   assert.equal(zoned('00123-', { signed: true, signSeparate: true }).text, '-123');
   assert.equal(zoned('000123', { signed: true, signSeparate: true }).ok, false); // 缺少符号
   assert.equal(zoned('00123-', { signed: true, signSeparate: true, signLeading: true }).ok, false); // 位置错误
-  assert.equal(zoned('-0012s', { signed: true, signSeparate: true, signLeading: true }).ok, false); // 分离符号时不允许嵌入
+  assert.equal(zoned('-0012S', { signed: true, signSeparate: true, signLeading: true }).ok, false); // 分离符号时不允许嵌入
 });

@@ -183,9 +183,9 @@ function zoned(value: number | string, f: CopyField): Uint8Array {
     return Buffer.from(f.signLeading ? sign + d : d + sign, 'latin1');
   }
   const bytes = Buffer.from(d, 'latin1');
-  if (f.signed && negative) {
-    // ASCII 環境の符号：末尾桁を 0x70~0x79 にする
-    bytes[f.signLeading ? 0 : n - 1] += 0x40;
+  if (f.signed) {
+    // NetCOBOL の符号：符号を持つ桁の上位 4 ビットを 4（正）/ 5（負）にする
+    bytes[f.signLeading ? 0 : n - 1] += negative ? 0x20 : 0x10;
   }
   return bytes;
 }
