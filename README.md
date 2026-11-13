@@ -23,6 +23,22 @@
 - **单元格详情**：点击单元格，在表格上方显示字段值和原始字节（十六进制）。
 - **错误**：长度越界、文件截断、前后 RDW 不一致都会在「错误」标签页和文件顺序视图中标红，写明偏移和原因，并尝试从后面的有效记录重新对齐。
 
+### 没有 copybook 时：自动识别 COMP-3
+
+尚未指定 copybook 的记录显示为「整条正文」一列。工具栏的「**自动识别 COMP-3**」开启时（默认开启，设置 `rdwViewer.autoDetectPacked`），
+会把正文切分成文字、COMP-3、无法识别的字节三类：
+
+```text
+[+11800]1FVAO-M006[+0][+0][+2250930][+2251006]
+```
+
+- `[ ]`（绿色）：猜测出的 COMP-3 数值。C/D 结尾带 `+`/`-`，F 结尾不带符号；不知道小数位，按整数显示。
+- `‹ ›`（灰色）：既不是文字也不是 COMP-3 的字节，以十六进制显示。
+- 末尾空格不显示；点击单元格可在上方查看完整内容和原始字节。
+
+这是**启发式猜测，可能误判**。例如文字后面紧跟以 `0x20`（空格）开头的 COMP-3 时，这个空格会被当作文字末尾的空格。
+需要准确结果时请指定 copybook；指定后不再自动识别。
+
 ### 长度与 copybook 不一致
 
 | 情况 | 宽松模式（默认） | 严格模式 |
@@ -62,6 +78,7 @@ copybook 总长度与记录长度对不上时，点提示条上的「**解析详
 | `rdwViewer.encoding` | `shift_jis` | 默认字符编码 |
 | `rdwViewer.lengthMismatch` | `lenient` | 长度不一致时的处理方式 |
 | `rdwViewer.binaryEndian` | `big` | `COMP` / `BINARY` 字段的字节序（COMP-3 不受影响） |
+| `rdwViewer.autoDetectPacked` | `true` | 没有 copybook 时自动识别 COMP-3 |
 | `rdwViewer.hiddenFieldPattern` | `^FILLER$` | 「隐藏 FILLER 列」开关隐藏的字段名正则，如 `FILLER\|COMMA` |
 
 ## 开发
@@ -85,6 +102,8 @@ npx @vscode/vsce package --allow-missing-repository --skip-license
 - `src/rdw.ts` RDW 扫描与错误恢复
 - `src/copybook.ts` copybook 解析
 - `src/layout.ts` 列布局（长度不一致的处理）
+- `src/autodetect.ts` 无 copybook 时的 COMP-3 自动识别
+- `src/numeric.ts` COMP-3 / COMP 解码
 - `src/session.ts` 数据模型（分组、按需解码、虚拟滚动数据源）
 - `src/extension.ts` VS Code 集成（命令、webview、copybook 映射存储）
 - `media/` webview 前端（虚拟滚动表格）

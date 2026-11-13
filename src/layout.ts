@@ -41,7 +41,7 @@ export interface CopybookRef {
 }
 
 /** 显示宽度：全角字符按 2 个字符宽度计 */
-function displayWidth(s: string): number {
+export function displayWidth(s: string): number {
   let w = 0;
   for (const ch of s) {
     w += ch.charCodeAt(0) > 0x2e7f ? 2 : 1;

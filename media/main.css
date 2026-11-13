@@ -181,6 +181,9 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 .row.err .c { color: var(--err); background: rgba(229, 83, 75, 0.1); }
 .row.err .l { background: rgba(229, 83, 75, 0.2); }
 .st-warn { color: var(--warn); }
+/* 无 copybook 时自动识别的 COMP-3 / 无法识别的字节 */
+.pk { color: var(--vscode-debugTokenExpression-number, #2f8f5b); font-weight: 600; }
+.raw { color: var(--vscode-descriptionForeground, #888); }
 .st-err { color: var(--err); }
 
 #empty { padding: 24px; opacity: 0.7; }

@@ -4,9 +4,10 @@
  */
 import { RdwIndex, scanRdw, RDW_SIZE } from './rdw';
 import { Copybook } from './copybook';
-import { Banner, Column, MismatchMode, buildColumns } from './layout';
+import { Banner, Column, MismatchMode, buildColumns, displayWidth } from './layout';
 import { SUPPORTED_ENCODINGS, createDecoder, sanitize, toHex } from './decode';
 import { decodeByUsage } from './numeric';
+import { segmentBody, formatSegments, plainSegments } from './autodetect';
 
 export interface Group {
   key: string;
@@ -38,6 +39,8 @@ export interface InitPayload {
   orderCount: number;
   groups: GroupInfo[];
   mismatch: MismatchMode;
+  /** 没有 copybook 时是否自动识别 COMP-3 */
+  autoPacked: boolean;
 }
 
 export interface RecRow {
@@ -90,11 +93,12 @@ export class RdwSession {
   private encoding: string;
   private mismatch: MismatchMode;
   private littleEndian: boolean;
+  private autoPacked: boolean;
 
   constructor(
     private readonly buf: Uint8Array,
     private readonly fileName: string,
-    opts: { encoding?: string; mismatch?: MismatchMode; binaryEndian?: 'big' | 'little' } = {}
+    opts: { encoding?: string; mismatch?: MismatchMode; binaryEndian?: 'big' | 'little'; autoPacked?: boolean } = {}
   ) {
     this.encoding = opts.encoding ?? 'shift_jis';
     this.decoder = createDecoder(this.encoding) ?? createDecoder('shift_jis')!;
@@ -103,6 +107,7 @@ export class RdwSession {
     }
     this.mismatch = opts.mismatch ?? 'lenient';
     this.littleEndian = opts.binaryEndian === 'little';
+    this.autoPacked = opts.autoPacked ?? true;
     this.index = scanRdw(buf);
     this.entryGroup = new Int32Array(this.index.count).fill(-1);
     this.buildGroups();
@@ -163,6 +168,35 @@ export class RdwSession {
     const set = buildColumns(g.length, g.copybook, this.mismatch, g.loadError);
     g.columns = set.columns;
     g.banner = set.banner;
+    this.fitBodyWidth(g);
+  }
+
+  /**
+   * 「整条正文」列：按抽样记录的实际显示内容确定列宽。
+   * 自动识别 COMP-3 后显示文字可能比字节数长（[+11850] 比 3 字节长），末尾空格则不显示，
+   * 所以按字节数估算会截断或留下大片空白。抽样（开头 100 条 + 均匀分布 100 条）可让列宽稳定，不随滚动变化。
+   */
+  private fitBodyWidth(g: Group): void {
+    const col = g.columns.find((c) => c.kind === 'body');
+    if (!col) {
+      return;
+    }
+    const idx = g.columns.indexOf(col);
+    const n = g.entries.length;
+    const picks = new Set<number>();
+    for (let i = 0; i < Math.min(n, 100); i++) {
+      picks.add(i);
+    }
+    const step = Math.max(1, Math.floor(n / 100));
+    for (let i = 0; i < n; i += step) {
+      picks.add(i);
+    }
+    let max = 0;
+    for (const i of picks) {
+      const text = plainSegments(this.cell(g.entries[i], g.columns[idx]).text);
+      max = Math.max(max, displayWidth(text));
+    }
+    col.width = Math.min(Math.max(max + 2, displayWidth(col.pic) + 2, 6), 3000);
   }
 
   groupByKey(key: string): Group | undefined {
@@ -186,7 +220,13 @@ export class RdwSession {
     }
     this.decoder = d;
     this.encoding = label;
+    this.groups.forEach((g) => this.fitBodyWidth(g));
     return true;
+  }
+
+  setAutoPacked(on: boolean): void {
+    this.autoPacked = on;
+    this.groups.forEach((g) => this.fitBodyWidth(g));
   }
 
   setMismatchMode(mode: MismatchMode): void {
@@ -207,6 +247,7 @@ export class RdwSession {
       errorCount: this.errorEntries.length,
       orderCount: this.displayRows.length,
       mismatch: this.mismatch,
+      autoPacked: this.autoPacked,
       groups: this.groups.map((g) => ({
         key: g.key,
         length: g.length,
@@ -239,6 +280,11 @@ export class RdwSession {
       }
       return d.ok ? { text: d.text, warn: false } : { text: toHex(bytes), warn: true };
     }
+    if (col.kind === 'body' && this.autoPacked) {
+      // 没有 copybook：自动识别 COMP-3，其余按文字 / 十六进制显示
+      const sjis = /shift|sjis|31j/i.test(this.encoding);
+      return { text: formatSegments(bytes, segmentBody(bytes, sjis), this.decoder).trimEnd(), warn: false };
+    }
     const raw = this.decoder.decode(bytes);
     let warn = col.kind === 'partial' || col.kind === 'extra' || raw.includes('�');
     if (col.type === 'num' && col.kind !== 'partial') {
@@ -250,7 +296,8 @@ export class RdwSession {
         warn = true;
       }
     }
-    return { text: sanitize(raw), warn };
+    // 整条正文列不显示末尾空格（避免撑出大片空白；完整内容可点击单元格查看）
+    return { text: col.kind === 'body' ? sanitize(raw).trimEnd() : sanitize(raw), warn };
   }
 
   private recRow(g: Group, entry: number): RecRow {
@@ -333,7 +380,7 @@ export class RdwSession {
       pic: col.pic,
       start: col.start,
       len: col.len,
-      text: r.text,
+      text: plainSegments(r.text),
       hex: toHex(this.slice(entry, col)),
       warn: r.warn,
     };
