@@ -1,4 +1,4 @@
-import { Copybook, FieldType } from './copybook';
+import { Copybook, FieldType, selectRecord } from './copybook';
 
 export type ColumnKind = 'field' | 'partial' | 'missing' | 'extra' | 'body';
 
@@ -95,14 +95,24 @@ export function buildColumns(
   }
 
   const cb = ref.copybook;
-  if (cb.fields.length === 0) {
+  const record = selectRecord(cb, bodyLen);
+  if (!record || record.fields.length === 0) {
     return {
       columns: bodyColumns(bodyLen),
-      banner: { level: 'error', text: `copybook「${ref.name}」中没有解析出任何字段，显示整条正文。` },
+      banner: {
+        level: 'error',
+        text: `copybook「${ref.name}」中没有解析出任何字段，显示整条正文。${cb.warnings.length ? `（解析提示：${cb.warnings.join('；')}）` : ''}`,
+      },
     };
   }
+  const fields = record.fields;
+  // 多个 01 时说明选用了哪一个
+  const recordNote =
+    cb.records.length > 1
+      ? `含 ${cb.records.length} 个 01 定义（${cb.records.map((r) => `${r.name}=${r.totalLength}`).join('、')}），选用 ${record.name}。`
+      : '';
 
-  const copyLen = cb.totalLength;
+  const copyLen = record.totalLength;
   const warnSuffix = cb.warnings.length > 0 ? `（解析提示：${cb.warnings.join('；')}）` : '';
 
   if (copyLen !== bodyLen && mode === 'strict') {
@@ -120,7 +130,7 @@ export function buildColumns(
   }
 
   const columns: Column[] = [];
-  for (const f of cb.fields) {
+  for (const f of fields) {
     const start = f.offset + 1;
     if (f.offset + f.length <= bodyLen) {
       columns.push(column(f.name, f.pic, start, f.length, f.length, 'field', f.type, f.signed, f.usage, f.scale));
@@ -135,19 +145,19 @@ export function buildColumns(
   if (copyLen === bodyLen) {
     banner = {
       level: cb.warnings.length > 0 ? 'warn' : 'info',
-      text: `copybook「${ref.name}」，总长 ${copyLen} 字节，${cb.fields.length} 个字段，与正文长度一致。${warnSuffix}`,
+      text: `copybook「${ref.name}」，总长 ${copyLen} 字节，${fields.length} 个字段，与正文长度一致。${recordNote}${warnSuffix}`,
     };
   } else if (copyLen < bodyLen) {
     const extra = bodyLen - copyLen;
     columns.push(column('(余り)', `X(${extra})`, copyLen + 1, extra, extra, 'extra', 'alnum', false));
     banner = {
       level: 'warn',
-      text: `长度不一致：正文 ${bodyLen} 字节，copybook「${ref.name}」${copyLen} 字节，多出的 ${extra} 字节显示在「(余り)」列。${warnSuffix}`,
+      text: `长度不一致：正文 ${bodyLen} 字节，copybook「${ref.name}」${copyLen} 字节，多出的 ${extra} 字节显示在「(余り)」列。${recordNote}${warnSuffix}`,
     };
   } else {
     banner = {
       level: 'warn',
-      text: `长度不一致：正文 ${bodyLen} 字节，copybook「${ref.name}」${copyLen} 字节，缺 ${copyLen - bodyLen} 字节；被截断的字段标橙，完全缺失的字段显示「—」。${warnSuffix}`,
+      text: `长度不一致：正文 ${bodyLen} 字节，copybook「${ref.name}」${copyLen} 字节，缺 ${copyLen - bodyLen} 字节；被截断的字段标橙，完全缺失的字段显示「—」。${recordNote}${warnSuffix}`,
     };
   }
   return { columns, banner };
