@@ -7,5 +7,6 @@
   "config.lengthMismatch": "记录长度与 copybook 总长度不一致时：lenient=尽量拆分并标出差异；strict=不拆分，只显示整条正文。",
   "config.binaryEndian": "COMP / BINARY（二进制）字段的字节序。COMP-3（packed decimal）不受影响。",
   "config.autoDetectPacked": "没有指定 copybook 时，自动识别正文中的 COMP-3（packed decimal）并显示为 [数值]。这是启发式猜测，可能误判。",
-  "config.hiddenFieldPattern": "「隐藏 FILLER 列」开启时，字段名匹配该正则（不区分大小写）的列会被隐藏，例如 FILLER|COMMA。"
+  "config.hiddenFieldPattern": "「隐藏 FILLER 列」开启时，字段名匹配该正则（不区分大小写）的列会被隐藏，例如 FILLER|COMMA。",
+  "config.exportEncoding": "导出文件的字符编码：shift_jis，或带 BOM 的 UTF-8（utf-8-bom）。"
 }

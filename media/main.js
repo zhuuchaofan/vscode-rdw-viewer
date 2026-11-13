@@ -151,6 +151,7 @@
       `</span><span class="spacer"></span>` +
       `<label title="${esc(S('autoPackedTitle'))}"><input type="checkbox" id="autoPacked" ${d.autoPacked ? 'checked' : ''}>${esc(S('autoPacked'))}</label>` +
       `<label title="${esc(S('hideFillerTitle'))}"><input type="checkbox" id="hideFiller" ${state.hideFiller ? 'checked' : ''}>${esc(S('hideFiller'))}</label>` +
+      `<button id="exportAll" title="${esc(S('exportAllTitle'))}">${esc(S('exportAll'))}</button>` +
       `<label>${esc(S('encoding'))} <select id="enc">${d.encodings
         .map((e) => `<option value="${e}" ${e === d.encoding ? 'selected' : ''}>${e}</option>`)
         .join('')}</select></label>`;
@@ -158,6 +159,7 @@
       state.hideFiller = ev.target.checked;
       resetView(true);
     };
+    document.getElementById('exportAll').onclick = () => vscode.postMessage({ type: 'exportAll' });
     document.getElementById('autoPacked').onchange = (ev) => {
       vscode.postMessage({ type: 'setAutoPacked', on: ev.target.checked });
     };
@@ -212,6 +214,7 @@
     } else if (state.view === ERR_VIEW) {
       level = 'error';
       text = S('errBanner', { n: d.errorCount });
+      buttons = `<button data-act="export" title="${esc(S('exportTitle'))}">${esc(S('export'))}</button>`;
     } else {
       const g = groupOf(state.view);
       level = g.banner.level;
@@ -223,6 +226,7 @@
       if (g.copybookName || g.banner.level === 'error') {
         buttons += `<button data-act="clear">${esc(S('clear'))}</button>`;
       }
+      buttons += `<button data-act="export" title="${esc(S('exportTitle'))}">${esc(S('export'))}</button>`;
       buttons +=
         g.value === null
           ? `<button data-act="disc" title="${esc(S('discTitle'))}">${esc(S('disc'))}</button>`
@@ -233,6 +237,10 @@
     const g = groupOf(state.view);
     $banner.querySelectorAll('button').forEach((b) => {
       b.onclick = () => {
+        if (b.dataset.act === 'export') {
+          vscode.postMessage({ type: 'exportView', view: state.view });
+          return;
+        }
         if (!g) return;
         const type = {
           choose: 'chooseCopybook',

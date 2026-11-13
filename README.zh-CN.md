@@ -28,6 +28,16 @@
 - **单元格详情**：点击单元格，在表格上方显示字段值和原始字节（十六进制）。
 - **错误**：长度越界、文件截断、前后 RDW 不一致都会在「错误」标签页和文件顺序视图中标红，写明偏移和原因，并尝试从后面的有效记录重新对齐。
 
+### 导出（CSV / TSV）
+
+- 每个标签页上方的「**导出…**」：把当前标签页导出为一个文件。
+- 工具栏的「**全部导出…**」：选择文件夹，每个标签页各导出一个文件（如 `<文件名>_<长度>.csv`）；有错误时也导出错误列表。
+- 导出时选择 CSV 或 TSV。第 1 行是字段名，第 2、3 行是属性和相对位置，每行前面是记录序号和偏移。
+- 默认用 Shift_JIS 编码（设置 `rdwViewer.exportEncoding` 可改为带 BOM 的 UTF-8）。Shift_JIS 无法表示的字符替换为 `?`，并提示数量。
+- COMP-3 等导出解码后的值。没有 copybook 时自动识别的 COMP-3 导出为 `[值]`，无法识别的字节导出为 `<十六进制>`。
+- 大文件分批写入，不会占用大量内存；显示进度，可以中途取消（已取消的文件会被删除）。
+- 文件顺序视图中各组的列不同，不能导出为一张表。
+
 ### 同一长度、按字段值使用不同 copybook
 
 记录长度相同但布局不同（例如头记录、明细记录、尾记录），可以按某个字段的值区分：
@@ -108,6 +118,7 @@ copybook 总长度与记录长度对不上时，点提示条上的「**解析详
 | `rdwViewer.lengthMismatch` | `lenient` | 长度不一致时的处理方式 |
 | `rdwViewer.binaryEndian` | `big` | `COMP` / `BINARY` 字段的字节序（COMP-3 不受影响） |
 | `rdwViewer.autoDetectPacked` | `true` | 没有 copybook 时自动识别 COMP-3 |
+| `rdwViewer.exportEncoding` | `shift_jis` | 导出文件的编码（`shift_jis` / `utf-8-bom`） |
 | `rdwViewer.hiddenFieldPattern` | `^FILLER$` | 「隐藏 FILLER 列」开关隐藏的字段名正则，如 `FILLER\|COMMA` |
 
 ## 发布
@@ -136,6 +147,8 @@ npx vsce package
 - `src/copybook.ts` copybook 解析
 - `src/layout.ts` 列布局（长度不一致的处理）
 - `src/i18n.ts` 界面文字（中文 / 日文）
+- `src/export.ts` CSV / TSV 导出
+- `src/sjisEncode.ts` Shift_JIS 编码器
 - `src/autodetect.ts` 无 copybook 时的 COMP-3 自动识别
 - `src/numeric.ts` COMP-3 / COMP 解码
 - `src/session.ts` 数据模型（分组、按需解码、虚拟滚动数据源）
