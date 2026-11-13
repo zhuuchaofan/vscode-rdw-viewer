@@ -125,7 +125,7 @@ npm run compile # 仅编译
 打包成 vsix（会自动先编译）：
 
 ```bash
-npx @vscode/vsce package --allow-missing-repository --skip-license
+npx vsce package
 ```
 
 按 F5 启动 Extension Development Host 调试。

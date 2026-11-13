@@ -1,0 +1,72 @@
+# 推送 v* 标签时发布到 VS Code Marketplace（以及启用后的 Open VSX）。
+# 使用 OIDC 免令牌发布（Trusted Publishing），仓库里不保存任何令牌。
+#
+# 事先需要在市场后台登记本工作流（见 PUBLISHING.md）：
+#   Repository owner: zhuuchaofan / Repository: vscode-rdw-viewer / Workflow: publish.yml / Environment: 留空
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: 标签与 package.json 的版本一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::标签 $GITHUB_REF_NAME 与 package.json 的版本 $version 不一致"
+            exit 1
+          fi
+
+  marketplace:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx vsce publish --oidc
+
+  openvsx:
+    # Open VSX 的第一个版本必须用访问令牌手动发布，之后才能登记 Trusted Publisher。
+    # 登记完成后，在仓库 Settings → Secrets and variables → Actions → Variables
+    # 添加变量 OPENVSX_TRUSTED=true 来启用此步骤。
+    if: vars.OPENVSX_TRUSTED == 'true'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx ovsx publish --trusted-publishing

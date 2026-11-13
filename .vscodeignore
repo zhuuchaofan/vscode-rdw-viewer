@@ -9,3 +9,4 @@ out/test/**
 PUBLISHING.md
 images/*.svg
 .gitignore
+.github/**

@@ -3,7 +3,7 @@
   "displayName": "%displayName%",
   "description": "%description%",
   "version": "0.2.0",
-  "publisher": "local",
+  "publisher": "zhuuchaofan",
   "license": "MIT",
   "icon": "images/icon.png",
   "repository": {
@@ -99,11 +99,14 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
-    "test": "tsc -p . && node --test out/test/*.test.js"
+    "test": "tsc -p . && node --test out/test/*.test.js",
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "4.1.1",
+    "ovsx": "1.4.0",
     "typescript": "^5.4.0"
   }
 }

@@ -116,7 +116,7 @@ npm run compile # コンパイルのみ
 vsix の作成（自動でコンパイルされます）：
 
 ```bash
-npx @vscode/vsce package
+npx vsce package
 ```
 
 ## ライセンス
