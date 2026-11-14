@@ -2,7 +2,7 @@
   "name": "rdw-viewer",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "publisher": "zhuuchaofan",
   "license": "MIT",
   "icon": "images/icon.png",
