@@ -197,31 +197,72 @@ test('未选中的 REDEFINES 布局中的问题也会报告（会影响区域大
 
 // ---- SYNC ----
 
-test('SYNC：需要填充时布局不可信（从该项目起可疑）；已对齐时不提示', () => {
+test('SYNC：需要时在项目前插入填充字节（FILLER），已对齐时不插入；都不影响可信度', () => {
   const mis = layout('01 R. 05 A PIC X. 05 B PIC S9(9) COMP SYNC. 05 C PIC X.');
-  assert.deepEqual(mis.issues, [['layout', 1]]);
-  assert.deepEqual(mis.suspect, ['B', 'C']);
-  assert.ok(mis.cb.warnings[0].includes('3'), '需要 3 字节填充');
+  assert.deepEqual(mis.fields, [['A', 0, 1], ['FILLER', 1, 3], ['B', 4, 4], ['C', 8, 1]]);
+  assert.equal(mis.trust, 'ok');
 
   const ok = layout('01 R. 05 A PIC X(4). 05 B PIC S9(9) COMP SYNC. 05 C PIC X.');
-  assert.equal(ok.trust, 'ok');
+  assert.deepEqual(ok.fields, [['A', 0, 4], ['B', 4, 4], ['C', 8, 1]]);
 });
 
-test('SYNC：对 COMP-3 / DISPLAY 无效（编译器忽略），不提示', () => {
-  assert.equal(layout('01 R. 05 A PIC X. 05 B PIC S9(5) COMP-3 SYNC. 05 C PIC X SYNC.').trust, 'ok');
+test('SYNC：对 COMP-3 / DISPLAY 无效（编译器忽略），不插入填充', () => {
+  const r = layout('01 R. 05 A PIC X. 05 B PIC S9(5) COMP-3 SYNC. 05 C PIC X SYNC.');
+  assert.deepEqual(r.fields, [['A', 0, 1], ['B', 1, 3], ['C', 4, 1]]);
 });
 
-test('SYNC：写在组项目上时适用于下级的基本项目；COMP-2 按 8 字节边界', () => {
-  assert.deepEqual(layout('01 R. 05 A PIC X. 05 G SYNC. 10 B PIC S9(4) COMP.').issues, [['layout', 1]]);
-  assert.deepEqual(layout('01 R. 05 A PIC X(4). 05 D COMP-2 SYNC.').issues, [['layout', 4]]);
-  assert.equal(layout('01 R. 05 A PIC X(8). 05 D COMP-2 SYNC.').trust, 'ok');
+test('SYNC：写在组项目上时适用于下级的基本项目；1~4 位为 2 字节边界，COMP-2 为 8 字节边界', () => {
+  assert.deepEqual(layout('01 R. 05 A PIC X. 05 G SYNC. 10 B PIC S9(4) COMP.').fields, [['A', 0, 1], ['FILLER', 1, 1], ['B', 2, 2]]);
+  assert.deepEqual(layout('01 R. 05 A PIC X(4). 05 D COMP-2 SYNC.').fields, [['A', 0, 4], ['FILLER', 4, 4], ['D', 8, 8]]);
+  assert.deepEqual(layout('01 R. 05 A PIC X(8). 05 D COMP-2 SYNC.').fields, [['A', 0, 8], ['D', 8, 8]]);
 });
 
-test('SYNC：OCCURS 的每次出现分别检查（第 2 次出现才不对齐）', () => {
+test('SYNC：文法書 1.3.5.1 的例子（组项目前的填充、OCCURS 每次重复末尾的填充）', () => {
+  const r = layout(`
+    01   GRP-1.
+         02 GRP-2.
+             03 CHAR-1   PIC X(5).
+             03 SYNC2-1 PIC S9(4) BINARY SYNC.
+             03 SYNC2-2 PIC S9(4) BINARY SYNC.
+         02 GRP-3    OCCURS 2.
+             03 GRP-4.
+                04 SYNC4-1 PIC S9(9) BINARY SYNC.
+                04 CHAR-2    PIC X.
+             03 CHAR-3     PIC X(2).
+         02 CHAR-4       PIC X.
+  `);
+  assert.deepEqual(r.fields, [
+    ['CHAR-1', 0, 5],
+    ['FILLER', 5, 1], // 规则 1：前面是基本项目，放在 SYNC2-1 紧前面
+    ['SYNC2-1', 6, 2],
+    ['SYNC2-2', 8, 2],
+    ['FILLER', 10, 2], // 规则 2：SYNC4-1 是 GRP-4、GRP-3 的第一个项目，放在 GRP-3（前面是基本项目）前面
+    ['SYNC4-1(1)', 12, 4],
+    ['CHAR-2(1)', 16, 1],
+    ['CHAR-3(1)', 17, 2],
+    ['FILLER', 19, 1], // 规则 3：每次重复 7 字节，补齐到 4 的倍数
+    ['SYNC4-1(2)', 20, 4],
+    ['CHAR-2(2)', 24, 1],
+    ['CHAR-3(2)', 25, 2],
+    ['FILLER', 27, 1],
+    ['CHAR-4', 28, 1],
+  ]);
+  assert.equal(r.total, 29);
+  assert.equal(r.trust, 'ok');
+});
+
+test('SYNC：OCCURS 的每次重复补齐到最大边界的倍数', () => {
   const r = layout('01 R. 05 T OCCURS 2. 10 A PIC X(2). 10 B PIC S9(4) COMP SYNC. 10 C PIC X.');
-  // 第 1 次：B 在偏移 2（对齐）；第 2 次：A 在 5，B 在 7（需要填充）
-  assert.deepEqual(r.issues, [['layout', 7]]);
-  assert.deepEqual(r.suspect, ['B(2)', 'C(2)']);
+  assert.deepEqual(r.fields, [
+    ['A(1)', 0, 2], ['B(1)', 2, 2], ['C(1)', 4, 1], ['FILLER', 5, 1],
+    ['A(2)', 6, 2], ['B(2)', 8, 2], ['C(2)', 10, 1], ['FILLER', 11, 1],
+  ]);
+});
+
+test('SYNC：REDEFINES 的原项目按规则对齐，重定义项目从同一位置开始（不另外插入填充）', () => {
+  const r = layout('01 R. 05 A PIC X. 05 R1. 10 B PIC S9(9) COMP SYNC. 05 R2 REDEFINES R1 PIC X(6). 05 Z PIC X.');
+  assert.deepEqual(r.fields, [['A', 0, 1], ['FILLER', 1, 3], ['B', 4, 4], ['Z', 10, 1]]);
+  assert.deepEqual(r.cb.records[0].sets.map((x) => [x.id, x.offset, x.length]), [['R.R1', 4, 6]]);
 });
 
 // ---- OCCURS DEPENDING ON ----
@@ -303,7 +344,7 @@ test('部分支持：提示条为警告；可信：提示条为信息', () => {
 });
 
 test('提示条只列出选中的 01 记录的问题', () => {
-  const cb = parseCopybook('01 H. 05 H1 PIC X(4). 01 D. 05 D1 PIC X. 05 D2 PIC S9(9) COMP SYNC.');
+  const cb = parseCopybook('01 H. 05 H1 PIC X(4). 01 D. 05 D1 PIC X. 05 D2 PIC X(4) FOO.');
   const h = buildColumns(4, { name: 'x.cpy', copybook: cb }, 'lenient');
   assert.equal(h.banner.level, 'info');
   const d = buildColumns(5, { name: 'x.cpy', copybook: cb }, 'lenient');

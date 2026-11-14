@@ -647,26 +647,6 @@ function groupSlots(children: Node[]): Slot[] {
   return slots;
 }
 
-/** 项目（含 OCCURS 次数）占用的字节数；REDEFINES 区域按最大者计算 */
-function sizeOf(node: Node, inh: Inherited): number {
-  if (node.marker) {
-    return 0;
-  }
-  const me = inherit(node, inh);
-  let one: number;
-  if (isElementary(node, me.usage)) {
-    one = picInfo(node.pic ?? '', me.usage, me.sign.separate, node.intSigned).length;
-  } else {
-    one = 0;
-    for (const slot of groupSlots(node.children)) {
-      if (!slot.orphan) {
-        one += Math.max(...slot.map((c) => sizeOf(c, me)));
-      }
-    }
-  }
-  return one * node.occurs;
-}
-
 /** SYNC 时基本项目的固有边界（字节）；SYNC 不起作用的项目为 0（NetCOBOL 文法書 5.4.12） */
 function syncBoundary(usage: string, digits: number): number {
   switch (usage) {
@@ -705,19 +685,58 @@ function addIssue(ctx: EmitCtx, issue: CopyIssue): void {
   }
 }
 
-/** 未选中的 REDEFINES 布局中的问题：会影响区域大小，在区域的起点报告 */
-function collectHidden(node: Node, at: number, ctx: EmitCtx): void {
-  for (const is of node.issues) {
-    if (is.level === 'layout') addIssue(ctx, { ...is, from: at });
+/** 项目开头（第一个基本项目）要求的边界：SYNC 时为该项目的固有边界，否则为 0 */
+function leadBoundary(node: Node, inh: Inherited): number {
+  if (node.marker) {
+    return 0;
   }
-  if (node.odo) {
-    addIssue(ctx, { level: 'layout', text: t('cpy.odoLayout', { name: node.name }), from: at });
+  const me = inherit(node, inh);
+  if (isElementary(node, me.usage)) {
+    return me.sync ? syncBoundary(me.usage, picInfo(node.pic ?? '', me.usage, me.sign.separate, node.intSigned).digits) : 0;
   }
-  node.children.forEach((c) => collectHidden(c, at, ctx));
+  const first = groupSlots(node.children).find((sl) => !sl.orphan && !sl[0].marker);
+  return first ? leadBoundary(first[0], me) : 0;
 }
 
-/** 展开一个项目，返回结束偏移 */
-function emit(node: Node, offset: number, idx: number[], path: string, inh: Inherited, ctx: EmitCtx): number {
+/** 项目中所有 SYNC 基本项目的边界的最大值（OCCURS 的每次重复按它补齐） */
+function maxBoundary(node: Node, inh: Inherited): number {
+  if (node.marker) {
+    return 0;
+  }
+  const me = inherit(node, inh);
+  if (isElementary(node, me.usage)) {
+    return me.sync ? syncBoundary(me.usage, picInfo(node.pic ?? '', me.usage, me.sign.separate, node.intSigned).digits) : 0;
+  }
+  return Math.max(0, ...node.children.map((c) => maxBoundary(c, me)));
+}
+
+/** 编译器插入的填充字节（遊びバイト）：作为隐含的 FILLER 显示 */
+function pushSlack(ctx: EmitCtx, offset: number, length: number): void {
+  ctx.out.push({
+    name: 'FILLER',
+    pic: `X(${length})`,
+    offset,
+    length,
+    type: 'alnum',
+    signed: false,
+    usage: 'DISPLAY',
+    scale: 0,
+    digits: 0,
+    signSeparate: false,
+    signLeading: false,
+  });
+}
+
+/**
+ * 展开一个项目，返回结束偏移。
+ *
+ * SYNC 的填充字节按 NetCOBOL 文法書 1.3.5.1 插入（偏移从记录开头算起，01 从 8 字节边界开始）：
+ *  1. 需要对齐的项目前面是基本项目时，填充放在它的紧前面；
+ *  2. 需要对齐的项目是组项目的第一个项目时，填充放在「前面是基本项目」的最内层的那个组项目前面
+ *     （不计入内层组项目的大小）。leading=true 表示这个项目是所在组的第一个项目，由上层负责对齐；
+ *  3. 带 OCCURS 的组项目中有需要对齐的项目时，每次重复的末尾补齐到其中最大边界的倍数。
+ */
+function emit(node: Node, offset: number, idx: number[], path: string, inh: Inherited, ctx: EmitCtx, leading = false): number {
   for (const is of node.issues) {
     addIssue(ctx, { ...is, from: offset });
   }
@@ -731,18 +750,19 @@ function emit(node: Node, offset: number, idx: number[], path: string, inh: Inhe
     addIssue(ctx, { level: 'layout', text: t('cpy.noPic', { name: node.name }), from: offset });
   }
   let off = offset;
+  const lead = leadBoundary(node, inh);
+  if (lead > 0 && off % lead !== 0 && (!leading || elementary)) {
+    const pad = lead - (off % lead);
+    pushSlack(ctx, off, pad);
+    off += pad;
+  }
+  const repAlign = !elementary && node.occurs > 1 ? maxBoundary(node, inh) : 0;
   for (let r = 1; r <= node.occurs; r++) {
     const ix = node.occurs > 1 ? [...idx, r] : idx;
+    const repStart = off;
     if (elementary) {
       const p = picInfo(node.pic ?? '', me.usage, me.sign.separate, node.intSigned);
       const picText = node.pic ?? '';
-      if (me.sync) {
-        // SYNC：编译器在这里插入填充字节（遊びバイト），使项目从固有边界开始。已对齐时不需要填充
-        const b = syncBoundary(me.usage, p.digits);
-        if (b > 0 && off % b !== 0) {
-          addIssue(ctx, { level: 'layout', text: t('cpy.sync', { name: node.name, pad: b - (off % b) }), from: off });
-        }
-      }
       if (me.usage === 'INDEX' || me.usage === 'POINTER') {
         addIssue(ctx, { level: 'layout', text: t('cpy.pointer', { name: node.name, usage: me.usage }), from: off });
       } else if (me.usage === 'BIT') {
@@ -764,6 +784,12 @@ function emit(node: Node, offset: number, idx: number[], path: string, inh: Inhe
       off += p.length;
     } else {
       off = emitChildren(node.children, off, ix, `${path}.${node.name}`, me, ctx);
+      const size = off - repStart;
+      if (repAlign > 0 && size % repAlign !== 0) {
+        const pad = repAlign - (size % repAlign);
+        pushSlack(ctx, off, pad);
+        off += pad;
+      }
     }
   }
   if (node.odo) {
@@ -774,6 +800,8 @@ function emit(node: Node, offset: number, idx: number[], path: string, inh: Inhe
 
 function emitChildren(children: Node[], offset: number, idx: number[], path: string, inh: Inherited, ctx: EmitCtx): number {
   let off = offset;
+  /** 还没有展开任何项目：下一个项目是这个组的第一个项目 */
+  let first = true;
   for (const slot of groupSlots(children)) {
     if (slot.orphan) {
       // 找不到 REDEFINES 的对象：这个项目被忽略，它可能比原项目长，区域大小因此可能不对
@@ -781,19 +809,40 @@ function emitChildren(children: Node[], offset: number, idx: number[], path: str
       continue;
     }
     if (slot.length === 1) {
-      off = emit(slot[0], off, idx, path, inh, ctx);
+      off = emit(slot[0], off, idx, path, inh, ctx, first);
+      first &&= slot[0].marker;
       continue;
     }
-    // REDEFINES：只展开选中的布局，区域大小取各布局的最大值（不重复计算）
-    const id = `${path}.${slot[0].name}`.replace(/^\./, '');
-    const size = Math.max(...slot.map((c) => sizeOf(c, inh)));
-    if (!ctx.sets.some((x) => x.id === id)) {
-      ctx.sets.push({ id, base: slot[0].name, options: slot.map((c) => c.name), offset: off, length: size });
+    // REDEFINES：原项目按通常的规则对齐；重定义项目从同一位置开始（对齐由编写者负责，编译器不插入填充）
+    const lead = first ? 0 : leadBoundary(slot[0], inh);
+    if (lead > 0 && off % lead !== 0) {
+      const pad = lead - (off % lead);
+      pushSlack(ctx, off, pad);
+      off += pad;
     }
+    first = false;
+    // 只展开选中的布局；区域大小取各布局实际展开后的最大值（含填充），未选中布局中的问题也会影响区域大小
+    const id = `${path}.${slot[0].name}`.replace(/^\./, '');
     const chosen = slot.find((c) => sameName(ctx.sel[id], c.name)) ?? slot[0];
-    slot.filter((c) => c !== chosen).forEach((c) => collectHidden(c, off, ctx));
-    emit(chosen, off, idx, path, inh, ctx);
-    off += size;
+    // 外层区域先登记（列表按出现顺序），长度在各布局展开后确定
+    let set = ctx.sets.find((x) => x.id === id);
+    if (!set) {
+      set = { id, base: slot[0].name, options: slot.map((c) => c.name), offset: off, length: 0 };
+      ctx.sets.push(set);
+    }
+    let end = off;
+    for (const c of slot) {
+      if (c === chosen) {
+        end = Math.max(end, emit(c, off, idx, path, inh, ctx, true));
+        continue;
+      }
+      const hidden: EmitCtx = { out: [], sets: [], sel: ctx.sel, issues: [], odo: [] };
+      end = Math.max(end, emit(c, off, idx, path, inh, hidden, true));
+      hidden.issues.filter((x) => x.level === 'layout').forEach((x) => addIssue(ctx, { ...x, from: off }));
+      hidden.odo.forEach((o) => addIssue(ctx, { level: 'layout', text: t('cpy.odoLayout', { name: o.name }), from: off }));
+    }
+    set.length = Math.max(set.length, end - off);
+    off = end;
   }
   return off;
 }
@@ -807,7 +856,7 @@ function trustOf(issues: CopyIssue[]): Trust {
 
 function buildLayout(root: Node, sel: LayoutSelection, fileIssues: CopyIssue[]): CopyLayout {
   const ctx: EmitCtx = { out: [], sets: [], sel, issues: [], odo: [] };
-  const totalLength = emit(root, 0, [], '', ROOT_INHERITED, ctx);
+  const totalLength = emit(root, 0, [], '', ROOT_INHERITED, ctx, true);
   // OCCURS DEPENDING ON：后面还有字段时，那些字段的位置随实际次数变化；在记录末尾时只有超出实际次数的部分无效
   for (const o of ctx.odo) {
     if (o.end < totalLength) {
