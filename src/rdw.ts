@@ -40,8 +40,14 @@ export const RDW_SIZE = 4;
 const MIN_RECORD = RDW_SIZE * 2;
 /** 出错后向后重新寻找记录边界的最大范围 */
 const RESYNC_LIMIT = 1 << 20;
-/** 异步扫描时每次连续处理的字节数上限后检查一次时间片 */
+/** 每处理这么多条记录交回一次控制权（由调用方检查时间片、取消、报告进度） */
 const SCAN_CHECK_RECORDS = 1 << 14;
+/**
+ * 重新对齐（逐字节寻找记录边界）时，每检查这么多字节交回一次控制权。
+ * 正常记录每条只读两个长度字段，耗时与记录大小无关；而损坏区域要逐字节检查，
+ * 一次重新对齐最多 1MB，只按记录条数计数的话，损坏较多的大文件会长时间无法取消。
+ */
+const RESYNC_CHECK_BYTES = 1 << 16;
 const DEFAULT_SLICE_MS = 30;
 
 const hex = (n: number): string => '0x' + n.toString(16).toUpperCase().padStart(8, '0');
@@ -120,6 +126,9 @@ function u16At(src: ByteSource, raw: Uint8Array | undefined, pos: number): numbe
   if (raw) {
     return raw[pos] | (raw[pos + 1] << 8);
   }
+  if (src.u16le) {
+    return src.u16le(pos);
+  }
   const b = src.read(pos, 2);
   return b[0] | (b[1] << 8);
 }
@@ -180,13 +189,24 @@ function* scanGenerator(input: Uint8Array | ByteSource): Generator<number, RdwIn
    * 从 pos 之后逐字节寻找下一个可信的记录边界。
    * 返回新位置；找不到则返回 size 并把剩余部分都算作错误。
    */
-  const resync = (pos: number, msg: string): number => {
+  const resync = function* (pos: number, msg: string): Generator<number, number> {
     const limit = Math.min(size - MIN_RECORD, pos + RESYNC_LIMIT);
-    for (let q = pos + 1; q <= limit; q++) {
-      if (chainValidAt(src, raw, size, q)) {
+    // 热循环放在普通函数里（生成器函数本身优化得较差）：返回找到的位置，没有则返回 -1
+    const search = (from: number, to: number): number => {
+      for (let q = from; q <= to; q++) {
+        if (chainValidAt(src, raw, size, q)) {
+          return q;
+        }
+      }
+      return -1;
+    };
+    for (let from = pos + 1; from <= limit; from += RESYNC_CHECK_BYTES) {
+      const q = search(from, Math.min(limit, from + RESYNC_CHECK_BYTES - 1));
+      if (q >= 0) {
         builder.pushError(pos, q - pos, t('rdw.resynced', { msg, n: q - pos, off: hex(q) }));
         return q;
       }
+      yield from / size;
     }
     builder.pushError(pos, size - pos, t('rdw.noResync', { msg, n: size - pos }));
     return size;
@@ -211,7 +231,7 @@ function* scanGenerator(input: Uint8Array | ByteSource): Generator<number, RdwIn
     const end = pos + RDW_SIZE + len;
 
     if (end + RDW_SIZE > size) {
-      pos = resync(
+      pos = yield* resync(
         pos,
         t('rdw.truncated', { off: hex(pos), len, need: RDW_SIZE + len + RDW_SIZE, remain })
       );
@@ -227,7 +247,7 @@ function* scanGenerator(input: Uint8Array | ByteSource): Generator<number, RdwIn
         builder.pushError(pos, next - pos, msg);
         pos = next;
       } else {
-        pos = resync(pos, msg);
+        pos = yield* resync(pos, msg);
       }
       continue;
     }
@@ -256,6 +276,10 @@ export async function scanRdwAsync(
   input: Uint8Array | ByteSource,
   opts: ScanProgress = {}
 ): Promise<RdwIndex | undefined> {
+  // 开始前已经取消（例如编辑器在打开途中被关闭）时不做任何读取
+  if (opts.isCancelled?.()) {
+    return undefined;
+  }
   const it = scanGenerator(input);
   let last = performance.now();
   let r = it.next();

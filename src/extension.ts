@@ -11,10 +11,15 @@ import { MismatchMode } from './layout';
 import { CompareSession, KeyPart, MatchMode, keyLabel } from './compare';
 
 export const EDITOR_VIEW_TYPE = 'rdwViewer.editor';
-/** 本地文件大于该阈值时采用分页读取（不把整份文件载入内存） */
-const PAGED_FILE_THRESHOLD = 32 * 1024 * 1024;
-/** 文件大于该阈值时异步扫描并显示可取消进度通知 */
-const SCAN_PROGRESS_THRESHOLD = 64 * 1024 * 1024;
+/** 各种「大文件」阈值（导出为可变对象，测试中调小以便用小文件走到大文件的路径） */
+export const thresholds = {
+  /** 本地文件大于该字节数时采用分页读取（不把整份文件载入内存） */
+  pagedFile: 32 * 1024 * 1024,
+  /** 文件大于该字节数时异步扫描并显示可取消进度通知 */
+  scanProgress: 64 * 1024 * 1024,
+  /** 两个文件的条目合计超过这个数时，比较在后台分批执行，显示进度并可以取消 */
+  compareProgress: 200_000,
+};
 
 const COPYBOOK_GLOB = '**/*.{cpy,CPY,cbl,CBL,cob,COB,copy,COPY}';
 const MAPPING_FILE = ['.vscode', 'rdw-viewer.json'];
@@ -615,7 +620,7 @@ async function loadSession(
   try {
     if (uri.scheme === 'file') {
       const stat = await fs.promises.stat(uri.fsPath);
-      if (stat.size >= PAGED_FILE_THRESHOLD) {
+      if (stat.size >= thresholds.pagedFile) {
         source = PagedFileSource.open(uri.fsPath);
       } else {
         source = new MemorySource(await fs.promises.readFile(uri.fsPath));
@@ -640,7 +645,7 @@ async function loadSession(
 
   let session: RdwSession | undefined;
   try {
-    if (source.size >= SCAN_PROGRESS_THRESHOLD) {
+    if (source.size >= thresholds.scanProgress) {
       session = await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
@@ -725,7 +730,14 @@ async function loadSession(
       await loadInto(g, stored);
     }
   };
-  await applyMapping();
+  try {
+    await applyMapping();
+  } catch (e) {
+    // 读取保存的设置失败等：会话不会交给调用方，这里负责释放文件
+    activeSession.close();
+    vscode.window.showErrorMessage(t('ext.readFailed', { error: (e as Error).message }));
+    return undefined;
+  }
   return {
     session: activeSession,
     fileName,
@@ -948,14 +960,11 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
 /**
  * 比较用的键项目：从 A 的 copybook 字段中多选，或手动输入位置范围（例：1-3,8-10）。
  */
-/** 两个文件的条目合计超过这个数时，比较在后台分批执行，显示进度并可以取消 */
-const COMPARE_PROGRESS_MIN = 200_000;
-
 /**
  * 执行比较。记录多时显示进度通知、可以取消；返回 false 表示已取消（cmp 保持原来的结果）。
  */
 async function runCompare(cmp: CompareSession, mode: MatchMode, keys: KeyPart[], names: string[]): Promise<boolean> {
-  if (cmp.a.index.count + cmp.b.index.count < COMPARE_PROGRESS_MIN) {
+  if (cmp.a.index.count + cmp.b.index.count < thresholds.compareProgress) {
     cmp.configure(mode, keys);
     return true;
   }
@@ -1064,16 +1073,37 @@ async function openCompare(ctx: vscode.ExtensionContext, a?: vscode.Uri, b?: vsc
     if (!b) return;
   }
   const la = await loadSession(ctx, a);
-  const lb = la && (await loadSession(ctx, b));
-  if (!la || !lb) {
+  if (!la) {
     return;
   }
-  let cmp = new CompareSession(la.session, lb.session, false);
+  const lb = await loadSession(ctx, b);
+  if (!lb) {
+    // B 打不开 / 取消：A 已经打开，必须释放
+    la.dispose();
+    return;
+  }
+  // 从这里开始，两个会话（大文件时各持有一个文件描述符）由比较面板负责释放；
+  // 面板建立之前的任何退出路径（取消、异常）都在这里释放
+  const disposeBoth = () => {
+    la.dispose();
+    lb.dispose();
+  };
+  let cmp: CompareSession;
   let files = [la.fileName, lb.fileName];
-  if (!(await runCompare(cmp, 'index', [], files))) {
-    return;
+  let panel: vscode.WebviewPanel;
+  try {
+    cmp = new CompareSession(la.session, lb.session, false);
+    if (!(await runCompare(cmp, 'index', [], files))) {
+      disposeBoth();
+      return;
+    }
+    panel = createPanel(ctx, `RDW: ${la.fileName} ⇄ ${lb.fileName}`, 'compare.js');
+  } catch (e) {
+    disposeBoth();
+    throw e;
   }
-  const panel = createPanel(ctx, `RDW: ${la.fileName} ⇄ ${lb.fileName}`, 'compare.js');
+  // 交换 A / B 只是调换同一对会话，不会重新打开文件，所以关闭面板时释放这两个即可
+  panel.onDidDispose(disposeBoth);
   const web = panel.webview;
 
   let gen = 0;

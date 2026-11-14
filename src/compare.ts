@@ -188,6 +188,9 @@ export class CompareSession {
    * 返回 false 表示已取消，此时比较结果保持原样。
    */
   async configureAsync(mode: MatchMode, keys: KeyPart[], opts: CompareProgress = {}): Promise<boolean> {
+    if (opts.isCancelled?.()) {
+      return false;
+    }
     const it = this.compute(mode, keys);
     let last = performance.now();
     let r = it.next();

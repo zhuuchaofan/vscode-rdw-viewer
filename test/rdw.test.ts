@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { scanRdw } from '../src/rdw';
+import { scanRdw, scanRdwAsync } from '../src/rdw';
 import { rec, ascii } from './helpers';
 
 test('正常记录：长度、偏移', () => {
@@ -74,4 +74,34 @@ test('坏记录之后紧接着文件被截断：中间的正常记录仍能找�
   assert.deepEqual(Array.from(idx.isError), [0, 1, 0, 1]);
   assert.match(idx.errors.get(1)!, /重新找到记录边界/);
   assert.match(idx.errors.get(3)!, /截断/);
+});
+
+test('scanRdwAsync：损坏区域的重新对齐途中也会交回控制权，可以取消；结果与同步扫描相同', async () => {
+  // 约 300KB 无法对齐的数据 + 两条正常记录，重复 3 次：
+  // 条目很少，按条目数计数的话整个扫描不会交回控制权
+  const garbage = Buffer.alloc(300 * 1024);
+  let seed = 42;
+  for (let i = 0; i < garbage.length; i++) {
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    garbage[i] = seed >>> 24; // 固定种子的伪随机字节：前后 RDW 对不上
+  }
+  const good = Buffer.concat([rec(ascii('AAAA')), rec(ascii('BBBB'))]);
+  const buf = Buffer.concat([garbage, good, garbage, good, garbage, good]);
+  const sync = scanRdw(buf);
+  // 6 条正常记录（正文 4 字节）都找回来了（伪随机数据里偶尔会有碰巧自洽的「记录」，不计）
+  assert.equal(sync.lengths.filter((len, e) => len === 4 && !sync.isError[e]).length, 6);
+  assert.ok(sync.errors.size >= 3);
+
+  const seen: number[] = [];
+  const index = await scanRdwAsync(buf, { sliceMs: 0, onProgress: (f) => seen.push(f) });
+  assert.ok(seen.length >= 9, `只交回了 ${seen.length} 次`);
+  assert.ok(seen.every((f, i) => f >= 0 && f <= 1 && (i === 0 || f >= seen[i - 1])));
+  assert.deepEqual(index, sync);
+
+  // 途中取消：第 3 次询问（开始前 1 次 + 交回控制权 2 次）时取消，之后不再继续
+  let asked = 0;
+  assert.equal(await scanRdwAsync(buf, { sliceMs: 0, isCancelled: () => ++asked >= 3 }), undefined);
+  assert.equal(asked, 3);
+  // 开始前已取消：不扫描
+  assert.equal(await scanRdwAsync(buf, { isCancelled: () => true }), undefined);
 });
