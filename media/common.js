@@ -94,7 +94,8 @@
       const cls = (k === 0 ? '' : k === 1 ? ' pic' : ' pos') + (C.isNumeric(col) ? ' num' : '');
       const text = k === 0 ? col.name : k === 1 ? col.pic : col.start || '';
       const dim = C.FILLER_RE.test(col.name) || col.kind === 'extra' ? ' dim' : '';
-      html += `<div class="c hd${cls}${dim} ${col.kind}" data-w="${px}" title="${esc(text)}">${esc(text)}</div>`;
+      const suspect = col.suspect ? ' suspect' : '';
+      html += `<div class="c hd${cls}${dim}${suspect} ${col.kind}" data-w="${px}" title="${esc(text)}">${esc(text)}</div>`;
     }
     return html;
   };

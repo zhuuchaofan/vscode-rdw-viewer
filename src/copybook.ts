@@ -2,16 +2,21 @@
  * 简易 COBOL copybook 解析器：把 copybook 展开成「叶子字段」列表（名称、偏移、长度、类型）。
  *
  * 支持：
- *  - 固定格式（第 7 列注释/第 8~72 列）和自由格式
+ *  - 固定格式（第 7 列注释 / 续行，第 8~72 列）、可变格式（第 8 列到行尾）和自由格式
+ *  - 固定 / 可变格式的续行（第 7 列为 -）：词、PIC 字符串、文字字面量
  *  - 层级号 01~49、77，FILLER，GROUP
  *  - PIC X/A/9/S/V/Z/N/G 等及 (n) 重复
- *  - USAGE DISPLAY / COMP / COMP-3 / COMP-5 / COMP-1 / COMP-2 等；组项目的 USAGE、SIGN 由下级项目继承
+ *  - USAGE DISPLAY / COMP / COMP-3 / COMP-5 / COMP-1 / COMP-2 / BINARY-CHAR 等；组项目的 USAGE、SIGN、SYNC 由下级项目继承
  *  - SIGN [LEADING|TRAILING] SEPARATE（符号占 1 字节）
  *  - OCCURS n（展开为 name(1)、嵌套时 name(1,2)…）
  *  - REDEFINES：原项目与重定义项目共用同一区域（大小取最大者），可切换显示哪一个布局
- *  - 多个 01：按记录长度选用；同长度的多个 01 也可切换
+ *  - 多个 01：按记录长度选用；同长度的多个 01 也可切换；01 TYPEDEF 不作为记录
  *
- * 不支持（会产生提示）：OCCURS DEPENDING ON（按最大次数展开）、SYNC 的对齐填充。
+ * 不支持的写法不会静默跳过，而是作为「问题」报告（CopyIssue），并区分影响程度：
+ *  - layout：可能改变字段的位置或长度（未展开的 COPY、SYNC 需要的填充、OCCURS DEPENDING ON 之后的字段、
+ *            无法识别的子句等）。该位置之后的字段标为「可疑」，整个布局标为不可信。
+ *  - value：位置可靠，但数值的解释可能不对（PIC 中的 P 等）。
+ *  - note：不影响已显示的字段（记录之外的 COPY 等）。
  */
 import { t } from './i18n';
 
@@ -36,7 +41,22 @@ export interface CopyField {
   signSeparate: boolean;
   /** 符号在前（SIGN LEADING）；默认在后 */
   signLeading: boolean;
+  /** 位于无法准确计算位置的定义之后：位置、长度可能与实际不同 */
+  suspect?: boolean;
 }
+
+/** 问题的影响程度：layout=位置 / 长度可能不对；value=数值解释可能不对；note=不影响已显示的字段 */
+export type IssueLevel = 'layout' | 'value' | 'note';
+
+export interface CopyIssue {
+  level: IssueLevel;
+  text: string;
+  /** layout 问题：从记录中的这个偏移（从 0 开始）起，字段的位置可能不对 */
+  from?: number;
+}
+
+/** 布局的可信度：ok=有依据；partial=位置可靠但有未支持的语义；untrusted=位置可能不对 */
+export type Trust = 'ok' | 'partial' | 'untrusted';
 
 /** 一组可以切换的布局：REDEFINES 的原项目和重定义项目 */
 export interface RedefineSet {
@@ -57,16 +77,21 @@ export interface CopyLayout {
   totalLength: number;
   /** 这个布局里出现的可切换区域 */
   sets: RedefineSet[];
+  /** 这个布局的问题（含整个 copybook 层面的问题） */
+  issues: CopyIssue[];
+  trust: Trust;
 }
 
 /** REDEFINES 的选择：区域 id → 布局名 */
 export type LayoutSelection = Record<string, string>;
 
-/** copybook 中的一个顶层（01）记录定义（fields / totalLength / sets 为默认布局） */
+/** copybook 中的一个顶层（01）记录定义（fields / totalLength / sets / issues 为默认布局） */
 export interface CopyRecord extends CopyLayout {
   name: string;
   /** 解析树（内部使用） */
   readonly root: unknown;
+  /** 整个 copybook 层面的问题（内部使用，展开布局时并入 issues） */
+  readonly fileIssues: CopyIssue[];
 }
 
 export interface Copybook {
@@ -75,12 +100,20 @@ export interface Copybook {
   totalLength: number;
   /** 所有顶层记录；有多个 01 时可按记录长度选用 */
   records: CopyRecord[];
+  /** 所有问题的文字（整个 copybook 层面 + 各记录的默认布局，去重） */
   warnings: string[];
+  /** 整个 copybook 层面的问题（不属于某个记录） */
+  issues: CopyIssue[];
 }
 
 /** 选用总长度等于记录长度的顶层定义；没有则用第一个 */
 export function selectRecord(cb: Copybook, bodyLen: number): CopyRecord | undefined {
   return cb.records.find((r) => r.totalLength === bodyLen) ?? cb.records[0];
+}
+
+interface NodeIssue {
+  level: IssueLevel;
+  text: string;
 }
 
 interface Node {
@@ -89,11 +122,21 @@ interface Node {
   pic?: string;
   /** 本项目写明的 USAGE（未写时继承上级） */
   usage?: string;
+  /** BINARY-CHAR 等 int 型是否有符号 */
+  intSigned?: boolean;
   occurs: number;
+  /** OCCURS DEPENDING ON（按最大次数 occurs 展开） */
+  odo: boolean;
   redefines?: string;
   /** 本项目写明的 SIGN 子句（未写时继承上级） */
   sign?: { separate: boolean; leading: boolean };
   sync: boolean;
+  /** 01 TYPEDEF：类型定义，不是记录 */
+  typedef: boolean;
+  /** 不对应数据的占位：记录中途无法处理的语句（COPY 等），只用来在该位置报告问题 */
+  marker: boolean;
+  /** 解析这一项时发现的问题（展开时在该项的位置报告） */
+  issues: NodeIssue[];
   children: Node[];
 }
 
@@ -101,20 +144,27 @@ interface Node {
 interface Inherited {
   usage: string;
   sign: { separate: boolean; leading: boolean };
+  /** 组项目上的 SYNC 适用于下级的基本项目（NetCOBOL 的 Windows / Linux 版） */
+  sync: boolean;
 }
 
-const NO_PIC_USAGES = new Set(['COMP-1', 'COMP-2', 'INDEX', 'POINTER']);
+/** int 型二进制整数（NetCOBOL）的字节数 */
+const INT_SIZES: Record<string, number> = { 'BINARY-CHAR': 1, 'BINARY-SHORT': 2, 'BINARY-LONG': 4, 'BINARY-DOUBLE': 8 };
 
-const CLAUSE_STARTS = new Set([
-  'PIC', 'PICTURE', 'USAGE', 'COMP', 'COMP-1', 'COMP-2', 'COMP-3', 'COMP-4', 'COMP-5',
-  'BINARY', 'PACKED-DECIMAL', 'DISPLAY', 'NATIONAL', 'DISPLAY-1', 'OCCURS', 'REDEFINES',
-  'COMPUTATIONAL', 'COMPUTATIONAL-1', 'COMPUTATIONAL-2', 'COMPUTATIONAL-3', 'COMPUTATIONAL-4', 'COMPUTATIONAL-5', 'SIGN', 'SYNC', 'SYNCHRONIZED',
-  'JUSTIFIED', 'JUST', 'BLANK', 'EXTERNAL', 'GLOBAL', 'INDEXED', 'INDEX', 'POINTER', 'LEADING', 'TRAILING',
-]);
+const NO_PIC_USAGES = new Set(['COMP-1', 'COMP-2', 'INDEX', 'POINTER', ...Object.keys(INT_SIZES)]);
 
 const USAGE_WORDS = new Set([
   'COMP', 'COMP-1', 'COMP-2', 'COMP-3', 'COMP-4', 'COMP-5', 'BINARY', 'PACKED-DECIMAL', 'DISPLAY',
-  'NATIONAL', 'DISPLAY-1', 'INDEX', 'POINTER',
+  'NATIONAL', 'DISPLAY-1', 'INDEX', 'POINTER', 'BIT', ...Object.keys(INT_SIZES),
+]);
+
+/** 子句开头的词：用来判断层级号后面是不是数据名，以及跳过名字列表（INDEXED BY 等）时在哪里停 */
+const CLAUSE_STARTS = new Set([
+  'PIC', 'PICTURE', 'USAGE', 'OCCURS', 'REDEFINES', 'SIGN', 'LEADING', 'TRAILING', 'SYNC', 'SYNCHRONIZED',
+  'JUSTIFIED', 'JUST', 'BLANK', 'EXTERNAL', 'GLOBAL', 'VALUE', 'VALUES', 'INDEXED', 'ASCENDING', 'DESCENDING',
+  'DEPENDING', 'CHARACTER', 'PRINTING', 'BASED', 'TYPE', 'TYPEDEF',
+  'COMPUTATIONAL', 'COMPUTATIONAL-1', 'COMPUTATIONAL-2', 'COMPUTATIONAL-3', 'COMPUTATIONAL-4', 'COMPUTATIONAL-5',
+  ...USAGE_WORDS,
 ]);
 
 /** COMPUTATIONAL-3 → COMP-3 等 */
@@ -148,42 +198,117 @@ function sliceColumns(line: string, from: number, to: number): string {
   return out;
 }
 
+function columnsOf(s: string): number {
+  let n = 0;
+  for (const ch of s) {
+    n += columnWidth(ch);
+  }
+  return n;
+}
+
 /** 固定格式行：1~6 列为空格或序号数字，第 7 列为指示区 */
-const FIXED_LINE = /^(?: {6}|\d{6})[ *\/\-D$]/;
+const FIXED_LINE = /^(?: {6}|\d{6})[ *\/\-Dd$]/;
+/** 固定格式的 B 区域到第 72 列为止：第 8~72 列共 65 列 */
+const FIXED_AREA = 65;
 
 /**
- * 去掉注释、序号区（1~6 列）、标识区（73~80 列），返回拼接后的源码。
- * 逐行判断：以 6 位序号开头的行、或文件大多数行都是固定格式时符合固定格式的行，按固定格式处理；
- * 其余行按自由格式处理。这样一两行格式不规整也不会让整个文件解析失败。
+ * 从 s 开头按引号状态 q 扫描：返回结束时的引号状态，以及字面量之外的行内注释「*>」的位置（没有则 -1）。
+ * 字面量中的两个连续引号（表示一个引号）会自然地关闭再打开，不需要特别处理。
  */
-function normalizeSource(text: string): string {
+function scanQuotes(s: string, q: string): { q: string; comment: number } {
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (q) {
+      if (ch === q) q = '';
+    } else if (ch === '"' || ch === "'") {
+      q = ch;
+    } else if (ch === '*' && s[i + 1] === '>') {
+      return { q, comment: i };
+    }
+  }
+  return { q, comment: -1 };
+}
+
+/**
+ * 去掉注释、序号区（1~6 列）、标识区（固定格式的 73~80 列），处理续行，返回拼接后的源码。
+ * 逐行判断：以 6 位序号开头的行、或文件大多数行都是固定格式时符合固定格式的行，按固定 / 可变格式处理；
+ * 其余行按自由格式处理。这样一两行格式不规整也不会让整个文件解析失败。
+ * 有一行在第 80 列之后还有内容时（固定格式一行最多 80 列），按可变格式处理：内容到行尾，不截掉第 73 列以后。
+ */
+function normalizeSource(text: string, issues: CopyIssue[]): string {
   const lines = text.replace(/\r\n?/g, '\n').split('\n').map((l) => l.replace(/\t/g, '    '));
   const nonEmpty = lines.filter((l) => l.trim().length > 0);
   const fixedLike = nonEmpty.filter((l) => FIXED_LINE.test(l)).length;
   const mostlyFixed = nonEmpty.length > 0 && fixedLike * 2 >= nonEmpty.length;
+  const isFixed = (raw: string) => /^\d{6}/.test(raw) || (mostlyFixed && FIXED_LINE.test(raw));
+  // 注释行的内容任意，不作为判断依据
+  const variable = lines.some((l) => isFixed(l) && !'*/Dd'.includes(l[6]) && sliceColumns(l, 80, Infinity).trim() !== '');
+  const areaEnd = variable ? Infinity : 72;
 
-  const out: string[] = [];
+  /** 已经处理好的各行（续行合并到前一行） */
+  const parts: string[] = [];
+  /** 最后一行结束时的引号状态（字面量没有闭合时为引号字符） */
+  let quote = '';
+  /** 最后一个物理行在 B 区域中占的列数（字面量续行时用来补齐到第 72 列） */
+  let lastCols = 0;
+  /** 把 text 接到 base 之后（从引号状态 q 开始），去掉字面量之外的行内注释 */
+  const append = (base: string, text: string, q: string) => {
+    const r = scanQuotes(text, q);
+    parts.push(base + (r.comment >= 0 ? text.slice(0, r.comment) : text));
+    quote = r.comment >= 0 ? '' : r.q;
+  };
+
   for (const raw of lines) {
-    let content: string;
-    if (/^\d{6}/.test(raw) || (mostlyFixed && FIXED_LINE.test(raw))) {
-      const indicator = raw[6] ?? ' ';
-      if (indicator === '*' || indicator === '/' || indicator === 'D') {
-        continue;
-      }
-      content = sliceColumns(raw, 7, 72); // 第 8~72 列（按字节计）
-    } else {
-      content = raw.trim();
+    if (!isFixed(raw)) {
+      const content = raw.trim();
       if (content.startsWith('*')) {
         continue;
       }
+      append('', content, '');
+      lastCols = columnsOf(content);
+      continue;
     }
-    const c = content.indexOf('*>');
-    out.push(c >= 0 ? content.slice(0, c) : content);
+    const indicator = raw[6] ?? ' ';
+    if (indicator === '*' || indicator === '/' || indicator === 'D' || indicator === 'd') {
+      continue;
+    }
+    const content = sliceColumns(raw, 7, areaEnd); // 第 8 列起（按字节计）
+    if (indicator !== '-') {
+      if (content.trim() === '') {
+        continue; // 空行不影响续行的接续对象
+      }
+      append('', content, '');
+      lastCols = columnsOf(content);
+      continue;
+    }
+    // 续行：接在前一行（注释行、空行除外）的后面
+    if (parts.length === 0) {
+      issues.push({ level: 'note', text: t('cpy.contNoPrev') });
+      append('', content, '');
+      lastCols = columnsOf(content);
+      continue;
+    }
+    const prev = parts.pop()!;
+    let cont = content.trimStart();
+    if (quote) {
+      // 字面量的续行：前一行到 B 区域末尾的空格都属于字面量，续行从引号之后接上
+      const pad = variable ? '' : ' '.repeat(Math.max(0, FIXED_AREA - lastCols));
+      if (cont[0] === quote) {
+        cont = cont.slice(1);
+      } else {
+        issues.push({ level: 'layout', text: t('cpy.contNoQuote'), from: 0 });
+      }
+      append(prev + pad, cont, quote);
+    } else {
+      // 词、PIC 字符串的续行：前一行最后一个非空字符之后直接接上
+      append(prev.trimEnd(), cont, '');
+    }
+    lastCols = columnsOf(content);
   }
-  return out.join(' ');
+  return parts.join(' ');
 }
 
-function splitStatements(src: string): string[] {
+function splitStatements(src: string, issues: CopyIssue[]): string[] {
   const out: string[] = [];
   let cur = '';
   let quote = '';
@@ -210,6 +335,10 @@ function splitStatements(src: string): string[] {
     }
     cur += ch;
   }
+  if (quote) {
+    // 引号没有闭合：后面的定义都被当作字面量吞掉了
+    issues.push({ level: 'layout', text: t('cpy.unclosedQuote'), from: 0 });
+  }
   if (cur.trim()) {
     out.push(cur.trim());
   }
@@ -224,7 +353,15 @@ export interface PicInfo {
   signed: boolean;
 }
 
-export function picInfo(pic: string, usage: string, signSeparate: boolean): PicInfo {
+/** PIC 的一个符号及可选的重复次数；\ 和 ¥ 是日文环境的货币符号 */
+const PIC_SYMBOL = /(CR|DB|[A-Z0-9.,+\-*$\/\\¥])(?:\((\d+)\))?/g;
+
+/** PIC 字符串能被完整地解析（没有多余的括号等） */
+function validPic(pic: string): boolean {
+  return pic.length > 0 && pic.toUpperCase().replace(PIC_SYMBOL, '') === '';
+}
+
+export function picInfo(pic: string, usage: string, signSeparate: boolean, intSigned = true): PicInfo {
   const up = pic.toUpperCase();
   const signed = up.startsWith('S');
   let len = 0;
@@ -232,8 +369,7 @@ export function picInfo(pic: string, usage: string, signSeparate: boolean): PicI
   let numeric = true;
   let scale = 0;
   let afterV = false;
-  const re = /(CR|DB|[A-Z0-9.,+\-*$\/])(?:\((\d+)\))?/g;
-  for (const m of up.matchAll(re)) {
+  for (const m of up.matchAll(PIC_SYMBOL)) {
     const sym = m[1];
     const n = m[2] ? parseInt(m[2], 10) : 1;
     if (sym === 'V') {
@@ -255,6 +391,9 @@ export function picInfo(pic: string, usage: string, signSeparate: boolean): PicI
     }
   }
 
+  if (usage in INT_SIZES) {
+    return { length: INT_SIZES[usage], digits: 0, scale: 0, type: 'bin', signed: intSigned };
+  }
   switch (usage) {
     case 'COMP':
     case 'COMP-4':
@@ -283,23 +422,41 @@ export function picInfo(pic: string, usage: string, signSeparate: boolean): PicI
 }
 
 const LEVEL_RE = /^(?:0?[1-9]|[1-4][0-9]|66|77|88)$/;
-/** 可以安静跳过的非数据描述语句 */
-const IGNORABLE = new Set(['EJECT', 'SKIP1', 'SKIP2', 'SKIP3', 'COPY', 'REPLACE', 'TITLE']);
+/** 可以安静跳过的、与数据布局无关的语句 */
+const IGNORABLE = new Set(['EJECT', 'SKIP1', 'SKIP2', 'SKIP3', 'TITLE']);
 
-function parseStatement(stmt: string, warnings: string[]): Node | undefined {
+/** 不带层级号的语句（COPY 等）：在出现的位置报告 */
+interface Directive {
+  kind: 'copy' | 'replace' | 'unknown';
+  /** COPY 的成员名 / 语句开头 */
+  text: string;
+}
+
+function newNode(level: number): Node {
+  return { level, name: 'FILLER', occurs: 1, odo: false, sync: false, typedef: false, marker: false, issues: [], children: [] };
+}
+
+function parseStatement(stmt: string): Node | Directive | undefined {
   let tokens: string[] = stmt.match(/'(?:[^']|'')*'|"(?:[^"]|"")*"|[^\s]+/g) ?? [];
   if (tokens.length === 0) {
     return undefined;
   }
+  let prefix = '';
   if (!LEVEL_RE.test(tokens[0])) {
-    const at = tokens.findIndex((t) => LEVEL_RE.test(t));
-    if (at < 0) {
-      if (!IGNORABLE.has(tokens[0].toUpperCase())) {
-        warnings.push(t('cpy.unknownStmt', { stmt: stmt.slice(0, 40) }));
-      }
+    const word = tokens[0].toUpperCase();
+    if (IGNORABLE.has(word)) {
       return undefined;
     }
-    warnings.push(t('cpy.unknownPrefix', { text: tokens.slice(0, at).join(' ').slice(0, 30) }));
+    const at = tokens.findIndex((tk) => LEVEL_RE.test(tk));
+    // 整句都没有层级号：COPY / REPLACE 语句，或无法识别的语句
+    if (at < 0) {
+      if (word === 'COPY') {
+        return { kind: 'copy', text: (tokens[1] ?? '').replace(/^['"]|['"]$/g, '') };
+      }
+      return word === 'REPLACE' ? { kind: 'replace', text: stmt.slice(0, 40) } : { kind: 'unknown', text: stmt.slice(0, 40) };
+    }
+    // 层级号前面有无法识别的内容（可能是缺少句点的 COPY 等）
+    prefix = tokens.slice(0, at).join(' ').slice(0, 30);
     tokens = tokens.slice(at);
   }
   const level = parseInt(tokens[0], 10);
@@ -307,58 +464,80 @@ function parseStatement(stmt: string, warnings: string[]): Node | undefined {
     return undefined;
   }
 
-  const node: Node = {
-    level: level === 77 ? 1 : level,
-    name: 'FILLER',
-    occurs: 1,
-    sync: false,
-    children: [],
-  };
-
+  const node = newNode(level === 77 ? 1 : level);
   let i = 1;
-  if (tokens[1] && !CLAUSE_STARTS.has(tokens[1].toUpperCase())) {
+  if (tokens[1] && !CLAUSE_STARTS.has(tokens[1].toUpperCase().replace(/,$/, ''))) {
     node.name = tokens[1];
     i = 2;
   }
+  if (prefix) {
+    node.issues.push({ level: 'layout', text: t('cpy.unknownPrefix', { text: prefix }) });
+  }
 
-  const up = (idx: number): string => (tokens[idx] ?? '').toUpperCase().replace(/,$/, '');
+  const up = (idx: number): string => (tokens[idx] ?? '').toUpperCase().replace(/[,;]$/, '');
+  /** 跳过指定的词（可选的 IS、ON 等） */
+  const skipWords = (...words: string[]) => {
+    while (i < tokens.length && words.includes(up(i))) i++;
+  };
+  /** 跳过名字列表（INDEXED BY 的指标名等），到下一个子句为止 */
+  const skipNames = () => {
+    while (i < tokens.length && !CLAUSE_STARTS.has(up(i))) i++;
+  };
+  let unknownWord: string | undefined;
 
   while (i < tokens.length) {
-    const k = up(i);
-    if (k === 'PIC' || k === 'PICTURE') {
+    const k = normalizeUsage(up(i));
+    if (k === '' || k === 'IS') {
       i++;
-      if (up(i) === 'IS') {
-        i++;
+    } else if (k === 'PIC' || k === 'PICTURE') {
+      i++;
+      skipWords('IS');
+      node.pic = (tokens[i] ?? '').replace(/[,;]$/, '').toUpperCase();
+      i++;
+      if (!validPic(node.pic)) {
+        node.issues.push({ level: 'layout', text: t('cpy.badPic', { name: node.name, pic: node.pic }) });
       }
-      node.pic = (tokens[i] ?? '').replace(/,$/, '').toUpperCase();
-      i++;
     } else if (k === 'USAGE') {
       i++;
-      if (up(i) === 'IS') {
-        i++;
+      skipWords('IS');
+      const u = normalizeUsage(up(i) || 'DISPLAY');
+      i++;
+      if (!USAGE_WORDS.has(u)) {
+        node.issues.push({ level: 'layout', text: t('cpy.unknownUsage', { name: node.name, usage: u }) });
       }
-      node.usage = normalizeUsage(up(i) || 'DISPLAY');
+      node.usage = u;
+      if (u in INT_SIZES) {
+        node.intSigned = u !== 'BINARY-CHAR';
+        if (up(i) === 'SIGNED' || up(i) === 'UNSIGNED') node.intSigned = up(i++) === 'SIGNED';
+      }
+    } else if (USAGE_WORDS.has(k)) {
+      node.usage = k;
       i++;
-    } else if (USAGE_WORDS.has(normalizeUsage(k))) {
-      node.usage = normalizeUsage(k);
-      i++;
+      if (k in INT_SIZES) {
+        node.intSigned = k !== 'BINARY-CHAR';
+        if (up(i) === 'SIGNED' || up(i) === 'UNSIGNED') node.intSigned = up(i++) === 'SIGNED';
+      }
     } else if (k === 'OCCURS') {
       i++;
-      let n = parseInt(tokens[i] ?? '1', 10);
+      let n = parseInt(tokens[i] ?? '', 10);
       i++;
       if (up(i) === 'TO') {
-        n = parseInt(tokens[i + 1] ?? String(n), 10);
+        n = parseInt(tokens[i + 1] ?? '', 10);
         i += 2;
       }
-      if (up(i) === 'TIMES') {
-        i++;
+      skipWords('TIMES');
+      if (Number.isFinite(n) && n > 0) {
+        node.occurs = n;
+      } else {
+        node.issues.push({ level: 'layout', text: t('cpy.badOccurs', { name: node.name }) });
       }
-      node.occurs = Number.isFinite(n) && n > 0 ? n : 1;
     } else if (k === 'DEPENDING') {
-      warnings.push(t('cpy.occursDepending', { name: node.name }));
       i++;
+      skipWords('ON');
+      skipNames();
+      node.odo = true;
     } else if (k === 'REDEFINES') {
-      node.redefines = tokens[i + 1];
+      node.redefines = tokens[i + 1]?.replace(/[,;]$/, '');
       i += 2;
     } else if (k === 'SIGN' || k === 'LEADING' || k === 'TRAILING') {
       // SIGN [IS] {LEADING|TRAILING} [SEPARATE [CHARACTER]]（SIGN 可省略）
@@ -375,14 +554,47 @@ function parseStatement(stmt: string, warnings: string[]): Node | undefined {
     } else if (k === 'SYNC' || k === 'SYNCHRONIZED') {
       node.sync = true;
       i++;
+      skipWords('LEFT', 'RIGHT');
     } else if (k === 'VALUE' || k === 'VALUES') {
       i++;
-      while (i < tokens.length && !CLAUSE_STARTS.has(up(i))) {
-        i++;
-      }
+      skipNames();
+    } else if (k === 'BLANK') {
+      i++;
+      skipWords('WHEN', 'ZERO', 'ZEROS', 'ZEROES');
+    } else if (k === 'JUSTIFIED' || k === 'JUST') {
+      i++;
+      skipWords('RIGHT');
+    } else if (k === 'EXTERNAL' || k === 'GLOBAL') {
+      i++;
+    } else if (k === 'INDEXED') {
+      i++;
+      skipWords('BY');
+      skipNames();
+    } else if (k === 'ASCENDING' || k === 'DESCENDING') {
+      i++;
+      skipWords('KEY', 'IS');
+      skipNames();
+    } else if (k === 'CHARACTER' || k === 'PRINTING' || k === 'BASED') {
+      // NetCOBOL：CHARACTER TYPE、PRINTING POSITION（印字属性）、BASED ON（基底付け）。都不影响布局
+      i++;
+      skipWords('TYPE', 'POSITION', 'ON', 'IS');
+      skipNames();
+    } else if (k === 'TYPEDEF') {
+      node.typedef = true;
+      i++;
+      skipWords('STRONG');
+    } else if (k === 'TYPE') {
+      i++;
+      const type = tokens[i] ?? '';
+      skipNames();
+      node.issues.push({ level: 'layout', text: t('cpy.type', { name: node.name, type }) });
     } else {
+      unknownWord ??= tokens[i];
       i++;
     }
+  }
+  if (unknownWord !== undefined) {
+    node.issues.push({ level: 'layout', text: t('cpy.unknownClause', { name: node.name, word: unknownWord }) });
   }
   return node;
 }
@@ -394,19 +606,22 @@ function isElementary(node: Node, usage: string): boolean {
 }
 
 function inherit(node: Node, from: Inherited): Inherited {
-  return { usage: node.usage ?? from.usage, sign: node.sign ?? from.sign };
+  return { usage: node.usage ?? from.usage, sign: node.sign ?? from.sign, sync: node.sync || from.sync };
 }
 
+/** 同一区域的项目：原项目 + 重定义项目。orphan=REDEFINES 的对象找不到（这个项目被忽略） */
+type Slot = Node[] & { orphan?: boolean };
+
 /** 把相邻的「原项目 + 重定义项目」归为一组；重定义项目的对象可以是原项目或同组中的另一项目 */
-function groupSlots(children: Node[], warnings: string[]): Node[][] {
-  const slots: Node[][] = [];
+function groupSlots(children: Node[]): Slot[] {
+  const slots: Slot[] = [];
   for (const c of children) {
     const last = slots[slots.length - 1];
     if (c.redefines) {
-      if (last && last.some((x) => sameName(c.redefines, x.name))) {
+      if (last && !last.orphan && last.some((x) => sameName(c.redefines, x.name))) {
         last.push(c);
       } else {
-        warnings.push(t('cpy.redefinesTarget', { name: c.name, target: c.redefines }));
+        slots.push(Object.assign([c], { orphan: true }));
       }
       continue;
     }
@@ -416,39 +631,109 @@ function groupSlots(children: Node[], warnings: string[]): Node[][] {
 }
 
 /** 项目（含 OCCURS 次数）占用的字节数；REDEFINES 区域按最大者计算 */
-function sizeOf(node: Node, inh: Inherited, warnings: string[]): number {
+function sizeOf(node: Node, inh: Inherited): number {
+  if (node.marker) {
+    return 0;
+  }
   const me = inherit(node, inh);
   let one: number;
   if (isElementary(node, me.usage)) {
-    one = picInfo(node.pic ?? '', me.usage, me.sign.separate).length;
+    one = picInfo(node.pic ?? '', me.usage, me.sign.separate, node.intSigned).length;
   } else {
     one = 0;
-    for (const slot of groupSlots(node.children, [])) {
-      one += Math.max(...slot.map((c) => sizeOf(c, me, warnings)));
+    for (const slot of groupSlots(node.children)) {
+      if (!slot.orphan) {
+        one += Math.max(...slot.map((c) => sizeOf(c, me)));
+      }
     }
   }
   return one * node.occurs;
+}
+
+/** SYNC 时基本项目的固有边界（字节）；SYNC 不起作用的项目为 0（NetCOBOL 文法書 5.4.12） */
+function syncBoundary(usage: string, digits: number): number {
+  switch (usage) {
+    case 'BINARY':
+    case 'COMP':
+    case 'COMP-4':
+    case 'COMP-5':
+      return digits <= 4 ? 2 : 4;
+    case 'COMP-1':
+    case 'INDEX':
+    case 'POINTER':
+      return 4;
+    case 'COMP-2':
+      return 8;
+    default:
+      return 0;
+  }
 }
 
 interface EmitCtx {
   out: CopyField[];
   sets: RedefineSet[];
   sel: LayoutSelection;
-  warnings: string[];
+  issues: CopyIssue[];
+  /** OCCURS DEPENDING ON 表的结束位置（全部展开后再判断后面有没有字段） */
+  odo: Array<{ name: string; end: number }>;
+}
+
+/** 记录问题：同一问题只记一次，位置取最靠前的 */
+function addIssue(ctx: EmitCtx, issue: CopyIssue): void {
+  const same = ctx.issues.find((x) => x.level === issue.level && x.text === issue.text);
+  if (!same) {
+    ctx.issues.push({ ...issue });
+  } else if (issue.from !== undefined && (same.from === undefined || issue.from < same.from)) {
+    same.from = issue.from;
+  }
+}
+
+/** 未选中的 REDEFINES 布局中的问题：会影响区域大小，在区域的起点报告 */
+function collectHidden(node: Node, at: number, ctx: EmitCtx): void {
+  for (const is of node.issues) {
+    if (is.level === 'layout') addIssue(ctx, { ...is, from: at });
+  }
+  if (node.odo) {
+    addIssue(ctx, { level: 'layout', text: t('cpy.odoLayout', { name: node.name }), from: at });
+  }
+  node.children.forEach((c) => collectHidden(c, at, ctx));
 }
 
 /** 展开一个项目，返回结束偏移 */
 function emit(node: Node, offset: number, idx: number[], path: string, inh: Inherited, ctx: EmitCtx): number {
+  for (const is of node.issues) {
+    addIssue(ctx, { ...is, from: offset });
+  }
+  if (node.marker) {
+    return offset;
+  }
   const me = inherit(node, inh);
-  if (node.sync && (me.usage !== 'DISPLAY' || !node.pic)) {
-    ctx.warnings.push(t('cpy.sync', { name: node.name }));
+  const elementary = isElementary(node, me.usage);
+  // 已经报告过这一项的长度问题（TYPE 等）时，不再重复报告「没有 PIC」
+  if (!elementary && node.children.length === 0 && !node.issues.some((x) => x.level === 'layout')) {
+    addIssue(ctx, { level: 'layout', text: t('cpy.noPic', { name: node.name }), from: offset });
   }
   let off = offset;
   for (let r = 1; r <= node.occurs; r++) {
     const ix = node.occurs > 1 ? [...idx, r] : idx;
-    if (isElementary(node, me.usage)) {
-      const p = picInfo(node.pic ?? '', me.usage, me.sign.separate);
+    if (elementary) {
+      const p = picInfo(node.pic ?? '', me.usage, me.sign.separate, node.intSigned);
       const picText = node.pic ?? '';
+      if (me.sync) {
+        // SYNC：编译器在这里插入填充字节（遊びバイト），使项目从固有边界开始。已对齐时不需要填充
+        const b = syncBoundary(me.usage, p.digits);
+        if (b > 0 && off % b !== 0) {
+          addIssue(ctx, { level: 'layout', text: t('cpy.sync', { name: node.name, pad: b - (off % b) }), from: off });
+        }
+      }
+      if (me.usage === 'INDEX' || me.usage === 'POINTER') {
+        addIssue(ctx, { level: 'layout', text: t('cpy.pointer', { name: node.name, usage: me.usage }), from: off });
+      } else if (me.usage === 'BIT') {
+        addIssue(ctx, { level: 'layout', text: t('cpy.bit', { name: node.name }), from: off });
+      }
+      if (p.type !== 'alnum' && /P/.test(picText)) {
+        addIssue(ctx, { level: 'value', text: t('cpy.picP', { name: node.name }) });
+      }
       ctx.out.push({
         name: node.name + (ix.length ? `(${ix.join(',')})` : ''),
         pic: p.type === 'bin' ? `${picText} ${me.usage}`.trim() : picText,
@@ -467,48 +752,110 @@ function emit(node: Node, offset: number, idx: number[], path: string, inh: Inhe
       off = emitChildren(node.children, off, ix, `${path}.${node.name}`, me, ctx);
     }
   }
+  if (node.odo) {
+    ctx.odo.push({ name: node.name, end: off });
+  }
   return off;
 }
 
 function emitChildren(children: Node[], offset: number, idx: number[], path: string, inh: Inherited, ctx: EmitCtx): number {
   let off = offset;
-  for (const slot of groupSlots(children, ctx.warnings)) {
+  for (const slot of groupSlots(children)) {
+    if (slot.orphan) {
+      // 找不到 REDEFINES 的对象：这个项目被忽略，它可能比原项目长，区域大小因此可能不对
+      addIssue(ctx, { level: 'layout', text: t('cpy.redefinesTarget', { name: slot[0].name, target: slot[0].redefines ?? '' }), from: off });
+      continue;
+    }
     if (slot.length === 1) {
       off = emit(slot[0], off, idx, path, inh, ctx);
       continue;
     }
     // REDEFINES：只展开选中的布局，区域大小取各布局的最大值（不重复计算）
     const id = `${path}.${slot[0].name}`.replace(/^\./, '');
-    const size = Math.max(...slot.map((c) => sizeOf(c, inh, ctx.warnings)));
+    const size = Math.max(...slot.map((c) => sizeOf(c, inh)));
     if (!ctx.sets.some((x) => x.id === id)) {
       ctx.sets.push({ id, base: slot[0].name, options: slot.map((c) => c.name), offset: off, length: size });
     }
     const chosen = slot.find((c) => sameName(ctx.sel[id], c.name)) ?? slot[0];
+    slot.filter((c) => c !== chosen).forEach((c) => collectHidden(c, off, ctx));
     emit(chosen, off, idx, path, inh, ctx);
     off += size;
   }
   return off;
 }
 
-const ROOT_INHERITED: Inherited = { usage: 'DISPLAY', sign: { separate: false, leading: false } };
+const ROOT_INHERITED: Inherited = { usage: 'DISPLAY', sign: { separate: false, leading: false }, sync: false };
+
+function trustOf(issues: CopyIssue[]): Trust {
+  if (issues.some((x) => x.level === 'layout')) return 'untrusted';
+  return issues.length > 0 ? 'partial' : 'ok';
+}
+
+function buildLayout(root: Node, sel: LayoutSelection, fileIssues: CopyIssue[]): CopyLayout {
+  const ctx: EmitCtx = { out: [], sets: [], sel, issues: [], odo: [] };
+  const totalLength = emit(root, 0, [], '', ROOT_INHERITED, ctx);
+  // OCCURS DEPENDING ON：后面还有字段时，那些字段的位置随实际次数变化；在记录末尾时只有超出实际次数的部分无效
+  for (const o of ctx.odo) {
+    if (o.end < totalLength) {
+      addIssue(ctx, { level: 'layout', text: t('cpy.odoLayout', { name: o.name }), from: o.end });
+    } else {
+      addIssue(ctx, { level: 'value', text: t('cpy.odoTail', { name: o.name }) });
+    }
+  }
+  fileIssues.forEach((x) => addIssue(ctx, x));
+  // 第一个位置可能不对的地方之后的字段都标为可疑
+  const froms = ctx.issues.filter((x) => x.level === 'layout').map((x) => x.from ?? 0);
+  const firstBad = froms.length > 0 ? Math.min(...froms) : Infinity;
+  for (const f of ctx.out) {
+    if (f.offset >= firstBad) f.suspect = true;
+  }
+  return { fields: ctx.out, totalLength, sets: ctx.sets, issues: ctx.issues, trust: trustOf(ctx.issues) };
+}
 
 /** 按 REDEFINES 的选择展开一个 01 记录 */
 export function layoutRecord(rec: CopyRecord, sel: LayoutSelection = {}): CopyLayout {
-  const ctx: EmitCtx = { out: [], sets: [], sel, warnings: [] };
-  const totalLength = emit(rec.root as Node, 0, [], '', ROOT_INHERITED, ctx);
-  return { fields: ctx.out, totalLength, sets: ctx.sets };
+  return buildLayout(rec.root as Node, sel, rec.fileIssues);
 }
 
 export function parseCopybook(text: string): Copybook {
-  const warnings: string[] = [];
+  const fileIssues: CopyIssue[] = [];
   const roots: Node[] = [];
   const stack: Node[] = [];
 
-  for (const stmt of splitStatements(normalizeSource(text))) {
-    const node = parseStatement(stmt, warnings);
-    if (!node) {
+  for (const stmt of splitStatements(normalizeSource(text, fileIssues), fileIssues)) {
+    const parsed = parseStatement(stmt);
+    if (!parsed) {
       continue;
     }
+    if (!('level' in parsed)) {
+      const issueText =
+        parsed.kind === 'copy'
+          ? t('cpy.copy', { member: parsed.text })
+          : parsed.kind === 'replace'
+            ? t('cpy.replace')
+            : t('cpy.unknownStmt', { stmt: parsed.text });
+      if (parsed.kind === 'replace') {
+        // REPLACE 会改写之后的源码：哪里会变无法判断
+        fileIssues.push({ level: 'layout', text: issueText, from: 0 });
+        continue;
+      }
+      // 记录定义的中途：在这个位置放一个占位项目，展开时从这里开始标为可疑
+      const group = [...stack].reverse().find((n) => !n.pic);
+      if (group) {
+        const marker = newNode(stack[stack.length - 1].level);
+        marker.marker = true;
+        marker.name = parsed.kind === 'copy' ? `COPY ${parsed.text}` : '?';
+        marker.issues.push({ level: 'layout', text: issueText });
+        group.children.push(marker);
+      } else if (stack.length > 0) {
+        fileIssues.push({ level: 'layout', text: issueText, from: 0 });
+      } else {
+        // 记录之外：已有的记录不受影响，但可能有记录没有显示出来
+        fileIssues.push({ level: 'note', text: parsed.kind === 'copy' ? t('cpy.copyOutside', { member: parsed.text }) : issueText });
+      }
+      continue;
+    }
+    const node = parsed;
     while (stack.length > 0 && stack[stack.length - 1].level >= node.level) {
       stack.pop();
     }
@@ -522,13 +869,16 @@ export function parseCopybook(text: string): Copybook {
 
   const records: CopyRecord[] = [];
   for (const root of roots) {
+    if (root.typedef) {
+      continue; // 类型定义，不是记录
+    }
     // 01 层的 REDEFINES 是同一区域的另一种记录定义，作为独立的 01 记录处理
-    const ctx: EmitCtx = { out: [], sets: [], sel: {}, warnings };
-    const totalLength = emit(root, 0, [], '', ROOT_INHERITED, ctx);
-    if (ctx.out.length > 0) {
-      records.push({ name: root.name, fields: ctx.out, totalLength, sets: ctx.sets, root });
+    const layout = buildLayout(root, {}, fileIssues);
+    if (layout.fields.length > 0) {
+      records.push({ name: root.name, ...layout, root, fileIssues });
     }
   }
+  const warnings = [...new Set([...fileIssues, ...records.flatMap((r) => r.issues)].map((x) => x.text))];
   const first = records[0];
-  return { fields: first?.fields ?? [], totalLength: first?.totalLength ?? 0, records, warnings };
+  return { fields: first?.fields ?? [], totalLength: first?.totalLength ?? 0, records, warnings, issues: fileIssues };
 }
