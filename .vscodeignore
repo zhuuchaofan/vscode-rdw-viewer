@@ -1,14 +1,12 @@
-.vscode/**
-src/**
-test/**
-tsconfig.json
-**/*.map
-node_modules/**
+# 白名单：先排除全部，再逐项放行。本机放在项目目录里的测试数据等不会被打包。
+# （package.json 和 extension.vsixmanifest 由 vsce 自动加入）
+**
+!out/src/**/*.js
 !media/**
-out/test/**
-PUBLISHING.md
-images/*.svg
-.gitignore
-.github/**
-examples/**
-.vscode-test/**
+!images/icon.png
+!images/screenshot.png
+!package.nls*.json
+!README.md
+!README.zh-CN.md
+!CHANGELOG.md
+!LICENSE
