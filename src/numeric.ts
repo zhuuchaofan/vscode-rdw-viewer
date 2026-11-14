@@ -155,6 +155,12 @@ export function decodeNumeric(bytes: Uint8Array, f: NumericField, opts: NumericO
       }
       return r;
     }
+    case 'BINARY-CHAR':
+    case 'BINARY-SHORT':
+    case 'BINARY-LONG':
+    case 'BINARY-DOUBLE':
+      // NetCOBOL 的 int 型二进制整数：本地字节序（与 COMP-5 相同；Windows / Linux 为小端），不做位数检查
+      return decodeBinary(bytes, 0, f.signed, opts.comp5LittleEndian);
     case 'COMP-1':
     case 'COMP-2': {
       const want = f.usage === 'COMP-1' ? 4 : 8;

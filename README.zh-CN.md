@@ -140,16 +140,25 @@ REDEFINES 的原项目与重定义项目共用同一块区域，区域长度取�
 ### copybook 支持范围
 
 支持：
-- 固定/自由格式（逐行判断；1~6 列序号、73~80 列标识自动去除。列按字节计算，有日文项目名也不会错位）
+- 固定/可变/自由格式（逐行判断；1~6 列序号、固定格式的 73~80 列标识自动去除。有超过 80 列的行时按可变格式处理，读到行尾。列按字节计算，有日文项目名也不会错位）
+- 续行（第 7 列为 `-`）：词、`PICTURE` 字符串、文字字面量的续行
 - 层级号（77；66、88 跳过）、`FILLER`、`PIC X/A/9/S/V/P/Z…`、编辑项目、`PIC N` / `PIC G`（每字符 2 字节）
-- 组项目的 `USAGE` / `SIGN` 由下级项目继承
+- 组项目的 `USAGE` / `SIGN` / `SYNC` 由下级项目继承
 - `SIGN [LEADING|TRAILING] [SEPARATE]`
 - `OCCURS n`（嵌套时展开为 `name(1,2)`）
 - `REDEFINES`（可切换，见上文）
 - 多个 `01`：自动选用总长度等于记录长度的那个定义
-- `COMPUTATIONAL-3` 等全称写法，没有 `PIC` 的 `COMP-1` / `COMP-2` / `INDEX`
+- `COMPUTATIONAL-3` 等全称写法，没有 `PIC` 的 `COMP-1` / `COMP-2`，`BINARY-CHAR` / `BINARY-SHORT` / `BINARY-LONG` / `BINARY-DOUBLE`
+- `TYPEDEF` 的 `01` 不作为记录
 
-不支持（会给出提示）：`OCCURS DEPENDING ON`（按最大次数展开）、`SYNC` 的对齐填充（不计算 slack byte）。
+**无法解释的写法不会静默跳过**，按影响程度显示：
+
+| 状态 | 例 | 显示 |
+| --- | --- | --- |
+| 位置可能不对 | 未展开的 `COPY`、`REPLACE`、需要填充的 `SYNC`、后面还有字段的 `OCCURS DEPENDING ON`、无法识别的子句 / `USAGE` / `PICTURE`、`TYPE`、`INDEX` / `POINTER`（64 位环境为 8 字节） | 提示条为红色，该位置及之后字段的表头加波浪线；严格模式下不拆分字段 |
+| 数值解释可能不对 | `PICTURE` 中的 `P`、记录末尾的 `OCCURS DEPENDING ON`（按最大次数展开） | 提示条为橙色 |
+
+尚不支持：`COPY` 的展开、`SYNC` 填充字节的计算、按实际次数展开 `OCCURS DEPENDING ON`、`P` 的数位缩放。
 
 ### 数值格式
 

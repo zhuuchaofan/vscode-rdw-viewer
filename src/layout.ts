@@ -26,6 +26,8 @@ export interface Column {
   signLeading: boolean;
   /** 建议列宽（单位 ch） */
   width: number;
+  /** 位于 copybook 中无法准确计算位置的写法之后：位置、长度可能与实际不同 */
+  suspect?: boolean;
 }
 
 export interface Banner {
@@ -102,6 +104,10 @@ function valueWidth(len: number, attrs: FieldAttrs): number {
     case 'COMP-4':
     case 'COMP-5':
     case 'BINARY':
+    case 'BINARY-CHAR':
+    case 'BINARY-SHORT':
+    case 'BINARY-LONG':
+    case 'BINARY-DOUBLE':
       // COMP 无符号时最大值的位数可能比 PIC 多（如 9(4) COMP 的 65535）
       return Math.max(attrs.digits, len * 2.5) + 2;
     default:
@@ -116,7 +122,7 @@ function widthOf(name: string, pic: string, len: number, kind: ColumnKind, attrs
 }
 
 function column(name: string, pic: string, start: number, len: number, fullLen: number, kind: ColumnKind, attrs: FieldAttrs): Column {
-  return {
+  const col: Column = {
     name,
     pic,
     start,
@@ -132,6 +138,10 @@ function column(name: string, pic: string, start: number, len: number, fullLen: 
     signLeading: attrs.signLeading,
     width: widthOf(name, pic, len, kind, attrs),
   };
+  if ((attrs as Partial<CopyField>).suspect) {
+    col.suspect = true;
+  }
+  return col;
 }
 
 function bodyColumns(bodyLen: number): Column[] {
@@ -215,8 +225,17 @@ export function buildColumns(
       : '';
 
   const copyLen = layout.totalLength;
-  const warnSuffix = warnSuffixOf(cb.warnings);
+  // 提示只列出这个布局（选中的 01 和 REDEFINES）的问题
+  const warnSuffix = warnSuffixOf(layout.issues.map((x) => x.text));
+  const untrusted = layout.trust === 'untrusted';
 
+  if (untrusted && mode === 'strict') {
+    return {
+      columns: bodyColumns(bodyLen),
+      banner: { level: 'error', text: t('banner.untrustedStrict', { name: ref.name, warn: warnSuffix }) },
+      choices: [],
+    };
+  }
   if (copyLen !== bodyLen && mode === 'strict') {
     const diff =
       copyLen > bodyLen ? t('banner.copyLonger', { n: copyLen - bodyLen }) : t('banner.bodyLonger', { n: bodyLen - copyLen });
@@ -242,7 +261,7 @@ export function buildColumns(
   let banner: Banner;
   if (copyLen === bodyLen) {
     banner = {
-      level: cb.warnings.length > 0 ? 'warn' : 'info',
+      level: layout.issues.length > 0 ? 'warn' : 'info',
       text: t('banner.ok', { name: ref.name, copy: copyLen, fields: fields.length, records: recordNote, warn: warnSuffix }),
     };
   } else if (copyLen < bodyLen) {
@@ -257,6 +276,9 @@ export function buildColumns(
       level: 'warn',
       text: t('banner.short', { body: bodyLen, name: ref.name, copy: copyLen, short: copyLen - bodyLen, records: recordNote, warn: warnSuffix }),
     };
+  }
+  if (untrusted) {
+    banner = { level: 'error', text: t('banner.untrusted') + banner.text };
   }
   return { columns, banner, choices };
 }

@@ -186,6 +186,8 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 .hd.pic { font-weight: normal; opacity: 0.9; }
 .hd.pos { font-weight: normal; opacity: 0.7; }
 .hd.partial, .hd.missing, .hd.extra { color: var(--warn); }
+/* copybook 中有无法准确计算位置的写法：这个项目及之后的项目位置可能不对 */
+.hd.suspect { color: var(--warn); text-decoration: underline wavy var(--warn); text-underline-offset: 3px; }
 
 .c.f { cursor: cell; }
 .c.f:hover { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
