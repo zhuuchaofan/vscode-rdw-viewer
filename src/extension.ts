@@ -6,7 +6,8 @@ import { RdwSession, Discriminator, Group, discriminatorLabel, ERR_VIEW } from '
 import { t, setLocale, uiStrings } from './i18n';
 import { canExport, exportChunks, viewFileSuffix, DEFAULT_EXPORT_OPTIONS, ExportFormat } from './export';
 import { encodeShiftJis } from './sjisEncode';
-import { parseCopybook, Copybook } from './copybook';
+import { parseCopybook, copyReferences, Copybook, CopyMember } from './copybook';
+import { memberFileNames, pickMember } from './copyresolve';
 import { MismatchMode } from './layout';
 import { CompareSession, KeyPart, MatchMode, keyLabel } from './compare';
 
@@ -34,8 +35,71 @@ function decodeCopybookText(bytes: Uint8Array): string {
   }
 }
 
-async function loadCopybook(uri: vscode.Uri): Promise<Copybook> {
-  return parseCopybook(decodeCopybookText(await vscode.workspace.fs.readFile(uri)));
+/** COPY 引用的登録集原文的查找结果（null=找不到），在一次读取（或一次扫描）中共用 */
+type MemberCache = Map<string, Promise<CopyMember | null>>;
+
+/** 一次读取中最多展开的登録集原文数（防止异常的引用关系） */
+const MAX_COPY_MEMBERS = 200;
+
+/** 查找并读取 COPY 引用的登録集原文（查找顺序见 copyresolve.ts） */
+function resolveMember(name: string, library: string | undefined, baseDir: vscode.Uri, cache: MemberCache): Promise<CopyMember | null> {
+  const key = `${baseDir.toString()}|${(library ?? '').toUpperCase()}|${name.toUpperCase()}`;
+  let hit = cache.get(key);
+  if (!hit) {
+    hit = (async () => {
+      const names = memberFileNames(name);
+      const found = new Map<string, vscode.Uri>();
+      // 1. 同一目录（原文名写成相对路径时也按它查找）
+      for (const fn of [...new Set([name, ...names.map((n) => path.join(path.dirname(name), n))])]) {
+        const uri = vscode.Uri.joinPath(baseDir, fn);
+        try {
+          if ((await vscode.workspace.fs.stat(uri)).type & vscode.FileType.File) found.set(uri.fsPath, uri);
+        } catch {
+          /* 不存在 */
+        }
+      }
+      // 2. 工作区中的同名文件
+      const glob = `**/{${names.map((n) => n.replace(/[{}[\],*?]/g, '?')).join(',')}}`;
+      for (const uri of await vscode.workspace.findFiles(glob, '**/{node_modules,.git,out}/**', 20)) {
+        found.set(uri.fsPath, uri);
+      }
+      const pick = pickMember(name, library, [...found.keys()], baseDir.fsPath);
+      if (!pick) {
+        return null;
+      }
+      const rel = (f: string) => vscode.workspace.asRelativePath(found.get(f)!);
+      try {
+        const text = decodeCopybookText(await vscode.workspace.fs.readFile(found.get(pick.chosen)!));
+        return { text, source: rel(pick.chosen), others: pick.others.map(rel) };
+      } catch {
+        return null;
+      }
+    })();
+    cache.set(key, hit);
+  }
+  return hit;
+}
+
+/** 读取 copybook，事先找到并读取其中（含嵌套的）COPY 引用的登録集原文，然后解析 */
+async function loadCopybook(uri: vscode.Uri, cache: MemberCache = new Map()): Promise<Copybook> {
+  const text = decodeCopybookText(await vscode.workspace.fs.readFile(uri));
+  const baseDir = vscode.Uri.joinPath(uri, '..');
+  const keyOf = (name: string, library?: string) => `${(library ?? '').toUpperCase()}|${name.toUpperCase()}`;
+  const members = new Map<string, CopyMember>();
+  const tried = new Set<string>();
+  const queue = copyReferences(text);
+  while (queue.length > 0 && tried.size < MAX_COPY_MEMBERS) {
+    const ref = queue.shift()!;
+    const k = keyOf(ref.name, ref.library);
+    if (tried.has(k)) continue;
+    tried.add(k);
+    const m = await resolveMember(ref.name, ref.library, baseDir, cache);
+    if (m) {
+      members.set(k, m);
+      queue.push(...copyReferences(m.text));
+    }
+  }
+  return parseCopybook(text, { resolve: (name, library) => members.get(keyOf(name, library)) });
 }
 
 interface StoredDiscriminator extends Discriminator {
@@ -192,10 +256,11 @@ function config() {
 async function scanCopybooks(): Promise<Array<{ uri: vscode.Uri; total: number }>> {
   const files = await vscode.workspace.findFiles(COPYBOOK_GLOB, '**/{node_modules,.git,out}/**', 500);
   const out: Array<{ uri: vscode.Uri; total: number }> = [];
+  const cache: MemberCache = new Map();
   for (const uri of files) {
     let total = -1;
     try {
-      total = (await loadCopybook(uri)).totalLength;
+      total = (await loadCopybook(uri, cache)).totalLength;
     } catch {
       /* 读不了就当长度未知 */
     }

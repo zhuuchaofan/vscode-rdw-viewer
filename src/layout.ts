@@ -261,7 +261,7 @@ export function buildColumns(
   let banner: Banner;
   if (copyLen === bodyLen) {
     banner = {
-      level: layout.issues.length > 0 ? 'warn' : 'info',
+      level: layout.issues.some((x) => x.level !== 'info') ? 'warn' : 'info',
       text: t('banner.ok', { name: ref.name, copy: copyLen, fields: fields.length, records: recordNote, warn: warnSuffix }),
     };
   } else if (copyLen < bodyLen) {

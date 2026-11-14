@@ -124,8 +124,22 @@ test('记录之外的 COPY：已显示的记录不受影响（部分支持）', 
   assert.deepEqual(r.suspect, []);
 });
 
-test('REPLACE：可能改写任何地方 → 所有字段可疑', () => {
-  const r = layout(`01 R. 05 A PIC X. REPLACE ==X(9)== BY ==X(5)==. 05 C PIC X.`);
+test('REPLACE：替换之后的语句（直到 REPLACE OFF）', () => {
+  const r = layout(`
+    01 R.
+       05 A PIC X(9).
+       REPLACE ==X(9)== BY ==X(5)== ==:N:== BY ==NAME==.
+       05 B PIC X(9).
+       05 :N: PIC X(2).
+       REPLACE OFF.
+       05 C PIC X(9).
+  `);
+  assert.deepEqual(r.fields, [['A', 0, 9], ['B', 9, 5], ['NAME', 14, 2], ['C', 16, 9]]);
+  assert.equal(r.trust, 'ok');
+});
+
+test('REPLACE：无法处理的写法（替换跨越句点）→ 所有字段可疑', () => {
+  const r = layout(`01 R. 05 A PIC X. REPLACE ==X. 05== BY ==X. 10==. 05 C PIC X.`);
   assert.equal(r.trust, 'untrusted');
   assert.deepEqual(r.suspect, ['A', 'C']);
 });
