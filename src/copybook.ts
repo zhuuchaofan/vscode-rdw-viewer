@@ -33,7 +33,10 @@ export interface CopyField {
   signed: boolean;
   /** USAGE（DISPLAY / COMP / COMP-3 …） */
   usage: string;
-  /** 小数位数（V 之后的位数） */
+  /**
+   * 小数位数：V 之后的位数。PIC 中有 P 时：P 在左边（PP99 / VPP99）为 P 和 9 的个数之和；
+   * P 在右边（99PP）为负数，表示末尾补 0
+   */
   scale: number;
   /** PIC 中 9 的个数（数值项目的位数） */
   digits: number;
@@ -369,6 +372,9 @@ export function picInfo(pic: string, usage: string, signSeparate: boolean, intSi
   let numeric = true;
   let scale = 0;
   let afterV = false;
+  /** P（假想的数位，不占存储）：在数字左边的个数、在数字右边的个数 */
+  let leadingP = 0;
+  let trailingP = 0;
   for (const m of up.matchAll(PIC_SYMBOL)) {
     const sym = m[1];
     const n = m[2] ? parseInt(m[2], 10) : 1;
@@ -376,7 +382,12 @@ export function picInfo(pic: string, usage: string, signSeparate: boolean, intSi
       afterV = true;
       continue;
     }
-    if (sym === 'S' || sym === 'P') {
+    if (sym === 'P') {
+      if (digits === 0) leadingP += n;
+      else trailingP += n;
+      continue;
+    }
+    if (sym === 'S') {
       continue;
     }
     // N（日文/National）、G（DBCS）每个字符 2 字节
@@ -389,6 +400,12 @@ export function picInfo(pic: string, usage: string, signSeparate: boolean, intSi
     } else {
       numeric = false;
     }
+  }
+  // P 在左边：假想小数点在所有 P 的左边（PP99 的 12 表示 0.0012）；P 在右边：末尾补 0（99PP 的 12 表示 1200）
+  if (leadingP > 0) {
+    scale = leadingP + digits;
+  } else if (trailingP > 0) {
+    scale = -trailingP;
   }
 
   if (usage in INT_SIZES) {
@@ -730,9 +747,6 @@ function emit(node: Node, offset: number, idx: number[], path: string, inh: Inhe
         addIssue(ctx, { level: 'layout', text: t('cpy.pointer', { name: node.name, usage: me.usage }), from: off });
       } else if (me.usage === 'BIT') {
         addIssue(ctx, { level: 'layout', text: t('cpy.bit', { name: node.name }), from: off });
-      }
-      if (p.type !== 'alnum' && /P/.test(picText)) {
-        addIssue(ctx, { level: 'value', text: t('cpy.picP', { name: node.name }) });
       }
       ctx.out.push({
         name: node.name + (ix.length ? `(${ix.join(',')})` : ''),

@@ -264,13 +264,20 @@ test('TYPEDEF 不作为记录；TYPE 引用无法展开 → 布局不可信（�
   assert.equal(cb.records[0].issues.length, 1);
 });
 
-test('PIC 中的 P：位置可靠但数值未缩放（部分支持）', () => {
-  const r = layout('01 R. 05 A PIC 9(3)P(2). 05 B PIC PP9(2). 05 C PIC X.');
-  assert.deepEqual(r.fields, [['A', 0, 3], ['B', 3, 2], ['C', 5, 1]]);
-  assert.equal(r.trust, 'partial');
-  assert.deepEqual(r.issues.map((x) => x[0]), ['value', 'value']);
-});
+test('PIC 中的 P：不占存储；P 在左边时小数位数为 P 与 9 之和，在右边时末尾补 0', () => {
+  const r = layout('01 R. 05 A PIC 9(3)P(2). 05 B PIC PP9(2). 05 C PIC SVPP99 COMP-3. 05 D PIC X.');
+  assert.deepEqual(r.fields, [['A', 0, 3], ['B', 3, 2], ['C', 5, 2], ['D', 7, 1]]);
+  assert.equal(r.trust, 'ok');
+  assert.deepEqual(r.cb.fields.map((f) => f.scale), [-2, 4, 4, 0]);
 
+  const body = Buffer.from([0x31, 0x32, 0x33, 0x31, 0x32, 0x01, 0x2d, 0x41]);
+  const s = new RdwSession(rec(body), 't.dat');
+  s.setCopybook(8, { name: 'p.cpy', copybook: r.cb });
+  // 表格中 DISPLAY 数字显示原来的字符，COMP-3 显示解码后的数值；DISPLAY 数字的数值在单元格详情中
+  assert.deepEqual((s.getRows('L8', 0, 1)[0] as RecRow).c, ['123', '12', '-0.0012', 'A']);
+  assert.equal(s.cellInfo('L8', 0, 0)!.value, '12300');
+  assert.equal(s.cellInfo('L8', 0, 1)!.value, '0.0012');
+});
 // ---- 提示条与列 ----
 
 test('布局不可信：提示条为错误，可疑的列带标记；严格模式下不拆分字段', () => {
@@ -288,7 +295,7 @@ test('布局不可信：提示条为错误，可疑的列带标记；严格模�
 });
 
 test('部分支持：提示条为警告；可信：提示条为信息', () => {
-  const partial = buildColumns(5, { name: 'p.cpy', copybook: parseCopybook('01 R. 05 A PIC 9(3)P(2). 05 B PIC X(2).') }, 'lenient');
+  const partial = buildColumns(4, { name: 'p.cpy', copybook: parseCopybook('01 R. 05 N PIC 9(2). 05 T OCCURS 1 TO 2 DEPENDING ON N. 10 X PIC X.') }, 'lenient');
   assert.equal(partial.banner.level, 'warn');
   assert.ok(partial.columns.every((c) => !c.suspect));
   const ok = buildColumns(5, { name: 'o.cpy', copybook: parseCopybook('01 R. 05 A PIC 9(3). 05 B PIC X(2).') }, 'lenient');
