@@ -9,7 +9,7 @@ import { encodeShiftJis } from './sjisEncode';
 import { parseCopybook, copyReferences, Copybook, CopyMember } from './copybook';
 import { memberFileNames, pickMember } from './copyresolve';
 import { MismatchMode } from './layout';
-import { CompareSession, KeyPart, MatchMode, keyLabel } from './compare';
+import { CompareSession, KeyPart, MatchMode, diffReportChunks, fieldBase, keyLabel } from './compare';
 
 export const EDITOR_VIEW_TYPE = 'rdwViewer.editor';
 /** 各种「大文件」阈值（导出为可变对象，测试中调小以便用小文件走到大文件的路径） */
@@ -408,7 +408,21 @@ async function writeExport(
   token: vscode.CancellationToken,
   share: number
 ): Promise<ExportResult | undefined> {
-  const opts = { ...DEFAULT_EXPORT_OPTIONS, format };
+  return writeChunks(exportChunks(session, view, { ...DEFAULT_EXPORT_OPTIONS, format }), file, encoding, progress, token, share);
+}
+
+/**
+ * 把分批生成的文本写入文件：逐批编码、追加写入，显示进度，可取消。
+ * 取消或失败时删除未完成的文件。records 为最后一批的 rows（没有时为 done）。
+ */
+async function writeChunks(
+  chunks: Iterable<{ text: string; done: number; total: number; rows?: number }>,
+  file: vscode.Uri,
+  encoding: 'shift_jis' | 'utf-8-bom',
+  progress: vscode.Progress<{ message?: string; increment?: number }>,
+  token: vscode.CancellationToken,
+  share: number
+): Promise<ExportResult | undefined> {
   const encode = (text: string) =>
     encoding === 'shift_jis' ? encodeShiftJis(text) : { bytes: new TextEncoder().encode(text), unmappable: 0 };
   const local = file.scheme === 'file';
@@ -422,14 +436,14 @@ async function writeExport(
       const bom = Uint8Array.of(0xef, 0xbb, 0xbf);
       fd ? await fd.write(bom) : parts.push(bom);
     }
-    for (const chunk of exportChunks(session, view, opts)) {
+    for (const chunk of chunks) {
       if (token.isCancellationRequested) {
         return undefined;
       }
       const r = encode(chunk.text);
       unmappable += r.unmappable;
       fd ? await fd.write(r.bytes) : parts.push(r.bytes);
-      records = chunk.done;
+      records = chunk.rows ?? chunk.done;
       const pct = chunk.total ? (chunk.done / chunk.total) * share : share;
       progress.report({ increment: pct - reported });
       reported = pct;
@@ -1028,25 +1042,30 @@ async function openViewer(ctx: vscode.ExtensionContext, target?: vscode.Uri): Pr
 /**
  * 执行比较。记录多时显示进度通知、可以取消；返回 false 表示已取消（cmp 保持原来的结果）。
  */
-async function runCompare(cmp: CompareSession, mode: MatchMode, keys: KeyPart[], names: string[]): Promise<boolean> {
+async function runCompare(cmp: CompareSession, mode: MatchMode, keys: KeyPart[], names: string[], ignore: string[] = cmp.ignore): Promise<boolean> {
   if (cmp.a.index.count + cmp.b.index.count < thresholds.compareProgress) {
-    cmp.configure(mode, keys);
+    cmp.configure(mode, keys, ignore);
     return true;
   }
   const ok = await vscode.window.withProgress(
     { location: vscode.ProgressLocation.Notification, title: t('ext.cmp.progress', { a: names[0], b: names[1] }), cancellable: true },
     (progress, token) => {
       let shown = 0;
-      return cmp.configureAsync(mode, keys, {
-        isCancelled: () => token.isCancellationRequested,
-        onProgress: (f) => {
-          const pct = Math.floor(f * 100);
-          if (pct > shown) {
-            progress.report({ increment: pct - shown });
-            shown = pct;
-          }
+      return cmp.configureAsync(
+        mode,
+        keys,
+        {
+          isCancelled: () => token.isCancellationRequested,
+          onProgress: (f) => {
+            const pct = Math.floor(f * 100);
+            if (pct > shown) {
+              progress.report({ increment: pct - shown });
+              shown = pct;
+            }
+          },
         },
-      });
+        ignore
+      );
     }
   );
   if (!ok) {
@@ -1122,6 +1141,56 @@ async function pickCompareKey(cmp: CompareSession): Promise<KeyPart[] | undefine
 }
 
 /** 两个文件的比较。a / b 省略时用对话框选择 */
+/** 比较时忽略的字段：从 A、B 两边的字段中多选（OCCURS 的各次出现合为一项） */
+async function pickIgnoredFields(cmp: CompareSession): Promise<string[] | undefined> {
+  const names = new Map<string, string>();
+  for (const s of [cmp.a, cmp.b]) {
+    for (const g of s.groups) {
+      for (const c of g.columns) {
+        if (c.kind !== 'body' && c.kind !== 'extra') names.set(fieldBase(c.name), c.name.replace(/\(.*\)$/, ''));
+      }
+    }
+  }
+  const current = new Set(cmp.ignore);
+  const items = [...names].map(([key, label]) => ({ label, key, picked: current.has(key) }));
+  const picked = await vscode.window.showQuickPick(items, {
+    canPickMany: true,
+    title: t('ext.cmp.ignoreTitle'),
+    placeHolder: t('ext.cmp.ignorePlaceholder'),
+  });
+  return picked?.map((x) => x.key);
+}
+
+/** 把差异导出为 CSV / TSV */
+async function exportDiffReport(ctx: vscode.ExtensionContext, cmp: CompareSession, dataUri: vscode.Uri, files: string[]): Promise<void> {
+  const format = await pickExportFormat(ctx);
+  if (!format) {
+    return;
+  }
+  const stem = (f: string) => f.replace(/\.[^.]*$/, '');
+  const target = await vscode.window.showSaveDialog({
+    title: t('ext.cmp.reportSaveTitle'),
+    defaultUri: vscode.Uri.joinPath(dataUri, '..', `${stem(files[0])}_vs_${stem(files[1])}_diff.${format}`),
+    filters: { [format.toUpperCase()]: [format] },
+  });
+  if (!target) {
+    return;
+  }
+  try {
+    const result = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: t('ext.cmp.reportProgress', { name: path.basename(target.fsPath) }), cancellable: true },
+      (progress, token) => writeChunks(diffReportChunks(cmp, format), target, config().exportEncoding, progress, token, 100)
+    );
+    if (!result) {
+      vscode.window.showInformationMessage(t('ext.export.cancelled'));
+      return;
+    }
+    await notifyExported(t('ext.cmp.reportDone', { n: result.records, path: target.fsPath }), result.unmappable, target);
+  } catch (e) {
+    vscode.window.showErrorMessage(t('ext.export.failed', { error: (e as Error).message }));
+  }
+}
+
 async function openCompare(ctx: vscode.ExtensionContext, a?: vscode.Uri, b?: vscode.Uri): Promise<void> {
   if (!a) {
     a = (await vscode.window.showOpenDialog({ canSelectMany: false, title: t('ext.cmp.pickA') }))?.[0];
@@ -1236,11 +1305,23 @@ async function openCompare(ctx: vscode.ExtensionContext, a?: vscode.Uri, b?: vsc
           sendInit();
         });
         break;
+      case 'chooseIgnore':
+        await recompare(async () => {
+          const ignore = await pickIgnoredFields(cmp);
+          if (ignore) {
+            await runCompare(cmp, cmp.mode, cmp.keys, files, ignore);
+          }
+          sendInit();
+        });
+        break;
+      case 'exportDiff':
+        await exportDiffReport(ctx, cmp, a!, files);
+        break;
       case 'swap':
         await recompare(async () => {
           const next = new CompareSession(cmp.b, cmp.a, false);
           const swapped = [files[1], files[0]];
-          if (await runCompare(next, cmp.mode, cmp.keys, swapped)) {
+          if (await runCompare(next, cmp.mode, cmp.keys, swapped, cmp.ignore)) {
             cmp = next;
             files = swapped;
             panel.title = `RDW: ${files[0]} ⇄ ${files[1]}`;

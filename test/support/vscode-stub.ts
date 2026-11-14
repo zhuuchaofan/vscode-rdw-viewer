@@ -91,9 +91,15 @@ export const state = {
   onProgressReport: undefined as (() => void) | undefined,
   /** 工作区的根目录：设置后 findFiles / asRelativePath 在这个目录中工作 */
   workspaceRoot: undefined as string | undefined,
+  /** 模拟用户的选择：快速选择（返回选中的项目）、保存对话框（返回保存位置） */
+  answers: {} as {
+    quickPick?: (items: Array<{ label: string; picked?: boolean }>, opts: { canPickMany?: boolean; title?: string }) => unknown;
+    saveDialog?: () => Uri | undefined;
+  },
   reset(): void {
     this.onProgressReport = undefined;
     this.workspaceRoot = undefined;
+    this.answers = {};
     this.panels.length = 0;
     this.errors.length = 0;
     this.infos.length = 0;
@@ -106,8 +112,9 @@ export const window = {
   showInformationMessage: async (m: string) => void state.infos.push(m),
   showWarningMessage: async () => undefined,
   showOpenDialog: async () => undefined,
-  showSaveDialog: async () => undefined,
-  showQuickPick: async () => undefined,
+  showSaveDialog: async () => state.answers.saveDialog?.(),
+  showQuickPick: async (items: Array<{ label: string; picked?: boolean }>, opts: { canPickMany?: boolean; title?: string } = {}) =>
+    state.answers.quickPick?.(await items, opts),
   showInputBox: async () => undefined,
   showTextDocument: async () => undefined,
   withProgress: <T>(_opts: unknown, task: (p: { report: (v: unknown) => void }, token: unknown) => Thenable<T>) =>
