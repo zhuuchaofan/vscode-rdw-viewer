@@ -149,12 +149,14 @@
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "test": "tsc -p . && node --test out/test/*.test.js",
+    "test:integration": "tsc -p . && node out/test/integration/runTest.js",
     "package": "vsce package",
     "examples": "tsc -p . && node out/test/fixtures/write-examples.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "3.1.0",
     "@vscode/vsce": "4.1.1",
     "ovsx": "1.4.0",
     "typescript": "^5.4.0"

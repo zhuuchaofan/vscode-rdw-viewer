@@ -77,6 +77,8 @@
 - 点击单元格并排显示 A / B 的值和十六进制；十六进制 dump 也左右并排，标出不同的字节。
 - copybook 使用普通视图中按长度指定的设置（`.vscode/rdw-viewer.json`）。布局不同时按字段名对应比较。
 - 文件较大（A、B 合计 20 万条以上）时显示进度，可以中途取消；取消后保留之前的比较结果。
+- **忽略字段…**：选中的字段即使值不同也视为相同（如更新时间；`OCCURS` 的各次出现一并忽略）。
+- **导出差异…**：每个有差异的字段一行（A / B 的值和位置），只在一侧的记录各一行，导出为 CSV / TSV。编码按 `rdwViewer.exportEncoding`。
 
 ### 同一长度、按字段值使用不同 copybook
 
@@ -145,20 +147,25 @@ REDEFINES 的原项目与重定义项目共用同一块区域，区域长度取�
 - 层级号（77；66、88 跳过）、`FILLER`、`PIC X/A/9/S/V/P/Z…`、编辑项目、`PIC N` / `PIC G`（每字符 2 字节）
 - 组项目的 `USAGE` / `SIGN` / `SYNC` 由下级项目继承
 - `SIGN [LEADING|TRAILING] [SEPARATE]`
+- `SYNC`：按 NetCOBOL 的规则（文法書 1.3.5.1）插入填充字节，显示为隐含的 `FILLER`（记录开头视为 8 字节边界）
+- `PICTURE` 中的 `P`：左边的 `P` 移动小数点，右边的 `P` 表示末尾补 0，都反映到数值上
 - `OCCURS n`（嵌套时展开为 `name(1,2)`）
 - `REDEFINES`（可切换，见上文）
 - 多个 `01`：自动选用总长度等于记录长度的那个定义
 - `COMPUTATIONAL-3` 等全称写法，没有 `PIC` 的 `COMP-1` / `COMP-2`，`BINARY-CHAR` / `BINARY-SHORT` / `BINARY-LONG` / `BINARY-DOUBLE`
 - `TYPEDEF` 的 `01` 不作为记录
+- 展开 `COPY` 语句：`REPLACING`（伪文本、词、字面量）、`DISJOINING … JOINING … AS PREFIX/SUFFIX`、嵌套的 `COPY`；也会应用 `REPLACE` 语句
+  - 按以下顺序查找被引用的 copybook：① 引用它的 copybook 所在目录；② 与登録集名（`COPY … OF 登録集名`）同名的目录；③ 工作区中的其他位置。名字不区分大小写，可以没有扩展名，或带 `.cpy` / `.cbl` / `.cob` / `.copy`
+  - 提示条中会写明展开了哪个文件；有多个同名文件时以橙色提示
 
 **无法解释的写法不会静默跳过**，按影响程度显示：
 
 | 状态 | 例 | 显示 |
 | --- | --- | --- |
-| 位置可能不对 | 未展开的 `COPY`、`REPLACE`、需要填充的 `SYNC`、后面还有字段的 `OCCURS DEPENDING ON`、无法识别的子句 / `USAGE` / `PICTURE`、`TYPE`、`INDEX` / `POINTER`（64 位环境为 8 字节） | 提示条为红色，该位置及之后字段的表头加波浪线；严格模式下不拆分字段 |
-| 数值解释可能不对 | `PICTURE` 中的 `P`、记录末尾的 `OCCURS DEPENDING ON`（按最大次数展开） | 提示条为橙色 |
+| 位置可能不对 | 找不到或无法展开的 `COPY`（含 `XMDLIB` / `XFDLIB` 的画面、帐票定义）、无法处理的 `REPLACE`、后面还有字段的 `OCCURS DEPENDING ON`、无法识别的子句 / `USAGE` / `PICTURE`、`TYPE`、`INDEX` / `POINTER`（64 位环境为 8 字节） | 提示条为红色，该位置及之后字段的表头加波浪线；严格模式下不拆分字段 |
+| 数值解释可能不对 | 记录末尾的 `OCCURS DEPENDING ON`（按最大次数展开） | 提示条为橙色 |
 
-尚不支持：`COPY` 的展开、`SYNC` 填充字节的计算、按实际次数展开 `OCCURS DEPENDING ON`、`P` 的数位缩放。
+尚不支持：按实际次数展开 `OCCURS DEPENDING ON`。
 
 ### 数值格式
 
@@ -208,6 +215,12 @@ npm test        # 编译并运行单元测试
 npm run compile # 仅编译
 ```
 
+在真实的 VS Code 中运行集成测试（会下载并启动 VS Code；Linux 上没有显示器时加 `xvfb-run -a`；用 `VSCODE_VERSION=1.85.2` 指定支持的最低版本）：
+
+```bash
+npm run test:integration
+```
+
 打包成 vsix（会自动先编译）：
 
 ```bash
@@ -219,7 +232,8 @@ npx vsce package
 目录结构：
 
 - `src/rdw.ts` RDW 扫描与错误恢复
-- `src/copybook.ts` copybook 解析
+- `src/copybook.ts` copybook 解析（含 COPY / REPLACE 的展开）
+- `src/copyresolve.ts` COPY 引用的 copybook 的查找规则
 - `src/layout.ts` 列布局（长度不一致的处理）
 - `src/i18n.ts` 界面文字（中文 / 日文）
 - `src/export.ts` CSV / TSV 导出

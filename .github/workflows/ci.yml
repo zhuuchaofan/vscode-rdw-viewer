@@ -20,3 +20,21 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npx vsce package
+
+  # 在真实的 VS Code 中运行（package.json 的 engines 声明的最低版本和最新稳定版）
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        vscode: ['1.85.2', 'stable']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: xvfb-run -a npm run test:integration
+        env:
+          VSCODE_VERSION: ${{ matrix.vscode }}
