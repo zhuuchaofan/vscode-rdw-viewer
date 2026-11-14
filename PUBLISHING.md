@@ -58,8 +58,10 @@ npx vsce package
 ```
 
 ```powershell
-npx ovsx publish rdw-viewer-0.2.0.vsix
+npx ovsx publish rdw-viewer-$((Get-Content package.json | ConvertFrom-Json).version).vsix
 ```
+
+（`npx vsce package` 生成的文件名是 `rdw-viewer-<package.json 的版本>.vsix`。这里发布的版本会成为 Open VSX 上的第一个版本，之后同一版本号不能再发布，下一次请先升版本号再走工作流。）
 
 6. 登记 Trusted Publisher：打开 <https://open-vsx.org/user-settings/trusted-publishers>，选择命名空间 `zhuuchaofan` 和扩展，Provider 选 GitHub Actions：
 
@@ -87,16 +89,20 @@ git pull
 ```
 
 ```bash
-git tag v0.2.0
+version="v$(node -p "require('./package.json').version")"
 ```
 
 ```bash
-git push origin v0.2.0
+git tag "$version"
+```
+
+```bash
+git push origin "$version"
 ```
 
 3. 在 GitHub 的 **Actions → Publish** 查看结果，然后到两个市场的页面确认显示。
 
-失败后修好问题，可以在 **Actions → Publish → Run workflow** 手动重新运行（发布的是当前 `package.json` 的版本；同一版本已经发布过的话会失败）。
+失败后修好问题，可以在 **Actions → Publish → Run workflow** 手动重新运行（发布的是当前 `package.json` 的版本；同一版本已经发布过的话会失败）。手动运行不会创建标签，需要的话之后在对应的提交上补打 `v<版本>` 标签。
 
 ## 发布前检查
 

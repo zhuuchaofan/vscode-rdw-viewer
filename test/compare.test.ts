@@ -257,3 +257,73 @@ test('configureAsync：结果与同步相同；取消时保留原来的结果', 
   assert.deepEqual(c.getRows(false, 0, 200), sync.getRows(false, 0, 200));
   assert.deepEqual(c.getRows(true, 0, 200), sync.getRows(true, 0, 200));
 });
+
+test('忽略字段：只有被忽略的字段不同时算作相同；有差异的列中不含被忽略的字段', () => {
+  // ID PIC X(3) / NAME PIC X(4) / AMT PIC 9(3)
+  const a = session(['001AAAA100', '002BBBB200', '003CCCC300']);
+  const b = session(['001AAAA101', '002XXXX201', '003CCCC300']);
+  const c = new CompareSession(a, b);
+  assert.deepEqual(pairs(c).map((x) => x[2]), ['chg', 'chg', 'same']);
+
+  c.configure('index', [], ['amt']);
+  assert.deepEqual(c.ignore, ['AMT']);
+  assert.deepEqual(pairs(c).map((x) => x[2]), ['same', 'chg', 'same']);
+  const row = c.getRows(true, 0, 10).find((r) => r.t === 'pair') as PairRow;
+  assert.deepEqual([row.da, row.db], [[1], [1]]); // 只有 NAME
+  assert.equal(c.init().ignore[0], 'AMT');
+
+  // 不改变忽略设置时沿用
+  c.configure('key', [{ start: 1, length: 3 }]);
+  assert.deepEqual(c.ignore, ['AMT']);
+  assert.equal(c.getStats().same, 2);
+});
+
+test('忽略字段：OCCURS 的各次出现一并忽略；布局不同时按名称', () => {
+  const occ = parseCopybook('01 R. 05 ID PIC X(2). 05 V OCCURS 2 PIC 9(2).'); // 6 字节
+  const mk = (recs: string[]) => {
+    const s = new RdwSession(Buffer.concat(recs.map((r) => rec(ascii(r)))), 'o.dat');
+    s.setCopybook(6, { name: 'o.cpy', copybook: occ });
+    return s;
+  };
+  const c = new CompareSession(mk(['AA1122']), mk(['AA3344']));
+  c.configure('index', [], ['V']);
+  assert.equal(c.getStats().same, 1);
+
+  // 布局不同（B 多一个字段 EXTRA）：按名称对应，忽略 EXTRA 和 AMT
+  const other = parseCopybook('01 R. 05 ID PIC X(3). 05 NAME PIC X(4). 05 EXTRA PIC X. 05 AMT PIC 9(3).'); // 11 字节
+  const bs = new RdwSession(Buffer.concat([rec(ascii('001AAAAZ999'))]), 'b.dat');
+  bs.setCopybook(11, { name: 'x.cpy', copybook: other });
+  const d = new CompareSession(session(['001AAAA100']), bs);
+  assert.equal(d.getStats().chg, 1);
+  d.configure('index', [], ['EXTRA', 'AMT']);
+  assert.equal(d.getStats().same, 1);
+});
+
+test('忽略字段：异步比较的结果与同步相同', async () => {
+  const a = session(['001AAAA100', '002BBBB200']);
+  const b = session(['001AAAA101', '002BBBB200']);
+  const c = new CompareSession(a, b, false);
+  assert.equal(await c.configureAsync('index', [], {}, ['AMT']), true);
+  assert.equal(c.getStats().same, 2);
+});
+
+test('差异报告：每个有差异的字段一行，只在一侧的记录一行；CSV 转义', async () => {
+  const { diffReportChunks } = await import('../src/compareReport');
+  const a = session(['001AAAA100', '002B,BB200', '004DDDD400']);
+  const b = session(['001AAAA101', '002B"BB201', '003CCCC300']);
+  const c = new CompareSession(a, b);
+  c.configure('key', [{ start: 1, length: 3 }]);
+  const chunks = [...diffReportChunks(c, 'csv', 1)];
+  const text = chunks.map((x) => x.text).join('');
+  const lines = text.trimEnd().split('\r\n');
+  assert.equal(lines[0], '配对序号,状态,A 记录序号,B 记录序号,字段,位置,A 的值,B 的值');
+  assert.deepEqual(lines.slice(1), [
+    '1,有差异,1,1,AMT,8,100,101',
+    '2,有差异,2,2,NAME,4,"B,BB","B""BB"',
+    '2,有差异,2,2,AMT,8,200,201',
+    '3,只在 A,3,,,,,',
+    '4,只在 B,,3,,,,',
+  ]);
+  assert.equal(chunks[chunks.length - 1].rows, 5);
+  assert.equal(chunks[chunks.length - 1].done, 4);
+});

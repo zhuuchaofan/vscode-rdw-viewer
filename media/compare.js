@@ -2,7 +2,7 @@
  *
  * 消息协议（host ⇄ webview）见 src/extension.ts 的 openCompare / src/compare.ts。
  *  host → web : cinit / rows / cell / dump / found
- *  web  → host: ready / getRows / cellInfo / dump / findDiff / chooseKey / setIndex / swap
+ *  web  → host: ready / getRows / cellInfo / dump / findDiff / chooseKey / setIndex / swap / chooseIgnore / exportDiff
  */
 (function () {
   'use strict';
@@ -109,16 +109,20 @@
       `<option value="index" ${d.mode === 'index' ? 'selected' : ''}>${esc(S('cmpModeIndex'))}</option>` +
       `<option value="key" ${d.mode === 'key' ? 'selected' : ''}>${esc(S('cmpModeKey'))}</option></select></label>` +
       (d.mode === 'key' ? `<button id="key" title="${esc(S('cmpKeyTitle'))}">${esc(S('cmpKey', { label: d.keyLabel }))}</button>` : '') +
+      `<button id="ignore" title="${esc(S('cmpIgnoreTitle'))}">${esc(S('cmpIgnore', { n: d.ignore.length }))}</button>` +
       `<label><input type="checkbox" id="diffOnly" ${state.diffOnly ? 'checked' : ''}>${esc(S('cmpDiffOnly'))}</label>` +
       `<button id="prev" title="${esc(S('cmpPrevTitle'))}">↑ ${esc(S('cmpPrev'))}</button>` +
       `<button id="next" title="${esc(S('cmpNextTitle'))}">↓ ${esc(S('cmpNext'))}</button>` +
       `<label title="${esc(S('hideFillerTitle'))}"><input type="checkbox" id="hideFiller" ${state.hideFiller ? 'checked' : ''}>${esc(S('hideFiller'))}</label>` +
-      `<label title="${esc(S('dumpToggleTitle'))}"><input type="checkbox" id="showDump" ${state.showDump ? 'checked' : ''}>${esc(S('dumpToggle'))}</label>`;
+      `<label title="${esc(S('dumpToggleTitle'))}"><input type="checkbox" id="showDump" ${state.showDump ? 'checked' : ''}>${esc(S('dumpToggle'))}</label>` +
+      `<button id="exportDiff" title="${esc(S('cmpExportTitle'))}">${esc(S('cmpExport'))}</button>`;
     document.getElementById('swap').onclick = () => vscode.postMessage({ type: 'swap' });
     document.getElementById('mode').onchange = (ev) =>
       vscode.postMessage({ type: ev.target.value === 'key' ? 'chooseKey' : 'setIndex' });
     const key = document.getElementById('key');
     if (key) key.onclick = () => vscode.postMessage({ type: 'chooseKey' });
+    document.getElementById('ignore').onclick = () => vscode.postMessage({ type: 'chooseIgnore' });
+    document.getElementById('exportDiff').onclick = () => vscode.postMessage({ type: 'exportDiff' });
     document.getElementById('diffOnly').onchange = (ev) => {
       state.diffOnly = ev.target.checked;
       state.selected = null;
@@ -147,6 +151,7 @@
       S('cmpSummary', st),
     ];
     if (st.noKeyA || st.noKeyB) parts.push(S('cmpNoKey', { a: st.noKeyA, b: st.noKeyB }));
+    if (d.ignore.length) parts.push(S('cmpIgnored', { list: d.ignore.join(', ') }));
     if (d.a.errorCount || d.b.errorCount) parts.push(S('cmpErrors', { a: d.a.errorCount, b: d.b.errorCount }));
     parts.push(S('cmpCopybookNote'));
     $banner.className = st.chg || st.a || st.b ? 'warn' : 'info';

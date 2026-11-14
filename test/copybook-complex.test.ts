@@ -272,10 +272,10 @@ test('01 层 REDEFINES：作为同一区域的另一种记录定义', () => {
   assert.deepEqual(cb.records.map((r) => [r.name, r.totalLength]), [['REC-A', 10], ['REC-B', 10]]);
 });
 
-test('SYNC：给出提示（不计算对齐填充）', () => {
+test('SYNC：插入填充字节（隐含的 FILLER），不再提示', () => {
   const cb = parseCopybook('01 R. 05 A PIC X. 05 B PIC S9(9) COMP SYNC.');
-  assert.deepEqual(layout(cb.fields), [['A', 0, 1], ['B', 1, 4]]);
-  assert.ok(cb.warnings.some((w) => w.includes('SYNC')));
+  assert.deepEqual(layout(cb.fields), [['A', 0, 1], ['FILLER', 1, 3], ['B', 4, 4]]);
+  assert.deepEqual(cb.warnings, []);
 });
 
 test('数值解码端到端：复杂记录的每个字段（COMP-3 小数、COMP、OCCURS、COMP-2、PIC N）', async () => {

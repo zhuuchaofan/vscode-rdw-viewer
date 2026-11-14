@@ -9,6 +9,9 @@
 import { CellInfo, DumpInfo, InitPayload, RdwSession, RecRow } from './session';
 import { Column } from './layout';
 
+/** 忽略字段时按名称匹配：去掉 OCCURS 的下标，不区分大小写（AMT(1)、AMT(2) 都算 AMT） */
+export const fieldBase = (name: string): string => name.replace(/\(.*\)$/, '').toUpperCase();
+
 export type MatchMode = 'index' | 'key';
 
 /** 键项目：正文中的位置（从 1 开始）和长度 */
@@ -71,6 +74,8 @@ export interface CompareInit {
   /** 分组组合有多个时，表头随行插入；只有一个时使用固定表头 */
   inline: boolean;
   combos: Array<{ ga: string | null; gb: string | null }>;
+  /** 比较时忽略的字段名 */
+  ignore: string[];
 }
 
 function sameBytes(x: Uint8Array, y: Uint8Array): boolean {
@@ -91,6 +96,7 @@ function sameRange(x: Uint8Array, xo: number, y: Uint8Array, yo: number, len: nu
 interface CompareState {
   mode: MatchMode;
   keys: KeyPart[];
+  ignore: string[];
   pa: Int32Array;
   pb: Int32Array;
   st: Uint8Array;
@@ -161,6 +167,9 @@ export class CompareSession {
   private stats: CompareStats = { pairs: 0, same: 0, chg: 0, a: 0, b: 0, noKeyA: 0, noKeyB: 0 };
   mode: MatchMode = 'index';
   keys: KeyPart[] = [];
+  /** 比较时忽略的字段名（fieldBase 后的形式） */
+  ignore: string[] = [];
+  private ignoreSet = new Set<string>();
 
   /** compute=false 时不立即比较（之后由调用方执行 configureAsync，大文件时可以取消） */
   constructor(
@@ -174,8 +183,8 @@ export class CompareSession {
   }
 
   /** 设置对应方式并重新比较（同步；大文件请用 configureAsync） */
-  configure(mode: MatchMode, keys: KeyPart[]): void {
-    const it = this.compute(mode, keys);
+  configure(mode: MatchMode, keys: KeyPart[], ignore: string[] = this.ignore): void {
+    const it = this.compute(mode, keys, ignore);
     let r = it.next();
     while (!r.done) {
       r = it.next();
@@ -187,11 +196,11 @@ export class CompareSession {
    * 设置对应方式并重新比较，中途定期交回事件循环，可以取消。
    * 返回 false 表示已取消，此时比较结果保持原样。
    */
-  async configureAsync(mode: MatchMode, keys: KeyPart[], opts: CompareProgress = {}): Promise<boolean> {
+  async configureAsync(mode: MatchMode, keys: KeyPart[], opts: CompareProgress = {}, ignore: string[] = this.ignore): Promise<boolean> {
     if (opts.isCancelled?.()) {
       return false;
     }
-    const it = this.compute(mode, keys);
+    const it = this.compute(mode, keys, ignore);
     let last = performance.now();
     let r = it.next();
     while (!r.done) {
@@ -212,6 +221,8 @@ export class CompareSession {
   private commit(s: CompareState): void {
     this.mode = s.mode;
     this.keys = s.keys;
+    this.ignore = s.ignore;
+    this.ignoreSet = new Set(s.ignore);
     this.pa = s.pa;
     this.pb = s.pb;
     this.st = s.st;
@@ -224,8 +235,10 @@ export class CompareSession {
   }
 
   /** 比较的主体：每处理一批记录 yield 一次进度（0~1），结束时返回结果 */
-  private *compute(reqMode: MatchMode, reqKeys: KeyPart[]): Generator<number, CompareState> {
+  private *compute(reqMode: MatchMode, reqKeys: KeyPart[], reqIgnore: string[]): Generator<number, CompareState> {
     const mode: MatchMode = reqMode === 'key' && reqKeys.length > 0 ? 'key' : 'index';
+    const ignore = [...new Set(reqIgnore.map(fieldBase))];
+    const ignoreSet = new Set(ignore);
     const keys = mode === 'key' ? reqKeys.map((k) => ({ ...k })) : [];
     const A = this.a;
     const B = this.b;
@@ -455,6 +468,11 @@ export class CompareSession {
             ) === 0;
           }
         }
+        if (!eq && ignoreSet.size > 0) {
+          // 有忽略的字段：只有被忽略的字段不同时算作相同
+          const d = this.diffColumns(ea, eb, ignoreSet);
+          eq = d.da.length === 0 && d.db.length === 0;
+        }
         if (eq) {
           s = ST_SAME;
           stats.same++;
@@ -541,7 +559,7 @@ export class CompareSession {
     const all = build(false);
     yield 0.98;
     const diff = build(true);
-    return { mode, keys, pa, pb, st, stats, comboOf, combos, all, diff, inline };
+    return { mode, keys, ignore, pa, pb, st, stats, comboOf, combos, all, diff, inline };
   }
 
   getStats(): CompareStats {
@@ -560,6 +578,7 @@ export class CompareSession {
       b: this.b.init(),
       mode: this.mode,
       keys: this.keys,
+      ignore: this.ignore,
       stats: this.getStats(),
       count: this.all.length,
       diffCount: this.diff.length,
@@ -576,8 +595,8 @@ export class CompareSession {
     return this.list(onlyDiff).length;
   }
 
-  /** 有差异的列（各自分组中的列下标） */
-  diffColumns(ea: number, eb: number): { da: number[]; db: number[] } {
+  /** 有差异的列（各自分组中的列下标）；忽略的字段不算 */
+  diffColumns(ea: number, eb: number, ignore: Set<string> = this.ignoreSet): { da: number[]; db: number[] } {
     const ga = this.a.groupOfEntry(ea);
     const gb = this.b.groupOfEntry(eb);
     const da: number[] = [];
@@ -585,9 +604,10 @@ export class CompareSession {
     if (!ga || !gb) {
       return { da, db };
     }
+    const ignored = (col: Column) => ignore.size > 0 && ignore.has(fieldBase(col.name));
     if (sameShape(ga.columns, gb.columns)) {
       ga.columns.forEach((col, i) => {
-        if (!sameBytes(this.a.slice(ea, col), this.b.slice(eb, gb.columns[i]))) {
+        if (!ignored(col) && !sameBytes(this.a.slice(ea, col), this.b.slice(eb, gb.columns[i]))) {
           da.push(i);
           db.push(i);
         }
@@ -597,6 +617,11 @@ export class CompareSession {
     // 布局不同：按名称对应，比较显示文字
     const usedB = new Set<number>();
     ga.columns.forEach((col, i) => {
+      if (ignored(col)) {
+        const j = counterpartColumn(ga.columns, i, gb.columns);
+        if (j >= 0) usedB.add(j);
+        return;
+      }
       const j = counterpartColumn(ga.columns, i, gb.columns);
       if (j < 0) {
         da.push(i);
@@ -608,7 +633,7 @@ export class CompareSession {
         db.push(j);
       }
     });
-    gb.columns.forEach((_, j) => !usedB.has(j) && db.push(j));
+    gb.columns.forEach((col, j) => !usedB.has(j) && !ignored(col) && db.push(j));
     db.sort((x, y) => x - y);
     return { da, db };
   }

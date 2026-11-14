@@ -11,3 +11,4 @@ images/*.svg
 .gitignore
 .github/**
 examples/**
+.vscode-test/**

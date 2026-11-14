@@ -9,7 +9,10 @@ export interface Decoded {
   ok: boolean;
 }
 
-/** 把「纯数字字符串 + 小数位数 + 正负」格式化成显示文本 */
+/**
+ * 把「纯数字字符串 + 小数位数 + 正负」格式化成显示文本。
+ * scale 为负时表示在末尾补 0（PIC 末尾的 P：999PP 中的 123 表示 12300）。
+ */
 export function formatNumber(digits: string, scale: number, negative: boolean, signed: boolean): string {
   let d = digits.replace(/^0+/, '');
   let body: string;
@@ -17,7 +20,7 @@ export function formatNumber(digits: string, scale: number, negative: boolean, s
     d = d.padStart(scale + 1, '0');
     body = `${d.slice(0, -scale)}.${d.slice(-scale)}`;
   } else {
-    body = d === '' ? '0' : d;
+    body = d === '' ? '0' : d + '0'.repeat(-scale);
   }
   const sign = negative ? '-' : signed ? '+' : '';
   return sign + body;

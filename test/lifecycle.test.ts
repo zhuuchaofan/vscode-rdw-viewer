@@ -14,16 +14,9 @@ import { PagedFileSource } from '../src/source';
 import { rec, ascii } from './helpers';
 import type * as Stub from './support/vscode-stub';
 
-/* eslint-disable @typescript-eslint/no-var-requires */
-// 把 require('vscode') 指向替身（必须在加载 extension 之前）
-const Module = require('module');
-const stubPath = require.resolve('./support/vscode-stub');
-const origResolve = Module._resolveFilename;
-Module._resolveFilename = function (request: string, ...rest: unknown[]) {
-  return request === 'vscode' ? stubPath : origResolve.call(this, request, ...rest);
-};
-const vscode: typeof Stub = require('./support/vscode-stub');
-const ext = require('../src/extension');
+import { loadExtension } from './support/load-extension';
+
+const { vscode, ext } = loadExtension();
 
 interface Provider {
   openCustomDocument(uri: Stub.Uri, ctx: unknown, token: { isCancellationRequested: boolean }): Promise<{ dispose(): void }>;
