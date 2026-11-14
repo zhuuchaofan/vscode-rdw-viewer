@@ -231,19 +231,24 @@ npx vsce package
 
 目录结构：
 
-- `src/rdw.ts` RDW 扫描与错误恢复
-- `src/copybook.ts` copybook 解析（含 COPY / REPLACE 的展开）
+- `src/rdw.ts` RDW 扫描与错误恢复；`src/source.ts` 文件的读取（整体读入 / 分页读取）
+- `src/copybook.ts` copybook 解析的入口（`parseCopybook` 等），具体实现在 `src/cobol/`：
+  - `source.ts` 源码预处理（固定 / 可变 / 自由格式、续行、切分语句）
+  - `statement.ts` 数据描述项的解析；`pic.ts` PICTURE 与 USAGE
+  - `emit.ts` 展开成字段（REDEFINES、OCCURS、SYNC 填充、可信度）
+  - `copy.ts` COPY / REPLACE 的展开；`types.ts` 解析结果的类型
 - `src/copyresolve.ts` COPY 引用的 copybook 的查找规则
 - `src/layout.ts` 列布局（长度不一致的处理）
-- `src/i18n.ts` 界面文字（中文 / 日文）
-- `src/export.ts` CSV / TSV 导出
-- `src/numeric.ts` 数值解码（COMP-3 / COMP / COMP-5 / 浮点 / 外部十进制）
-- `test/fixtures/examples.ts` 示例文件生成器
-- `src/sjisEncode.ts` Shift_JIS 编码器
-- `src/autodetect.ts` 无 copybook 时的 COMP-3 自动识别
-- `src/numeric.ts` COMP-3 / COMP 解码
-- `src/session.ts` 数据模型（分组、按需解码、虚拟滚动数据源）
-- `src/extension.ts` VS Code 集成（命令、webview、copybook 映射存储）
+- `src/session.ts` 数据模型（分组、按需解码、虚拟滚动数据源）；类型在 `sessionTypes.ts`，判别字段值的缓存在 `discValue.ts`
+- `src/compare.ts` 两个文件的比较；`src/compareReport.ts` 差异报告
+- `src/numeric.ts` 数值解码（COMP-3 / COMP / COMP-5 / 浮点 / 外部十进制）；`src/autodetect.ts` 无 copybook 时的 COMP-3 自动识别
+- `src/export.ts` CSV / TSV 导出；`src/sjisEncode.ts` Shift_JIS 编码器
+- `src/i18n.ts` 界面文字的切换，文字本身在 `src/messages/`（`zh.ts` / `ja.ts`）
+- `src/extension.ts` 扩展入口（`activate`），VS Code 相关的实现在 `src/ext/`：
+  - `viewer.ts` 打开文件、自定义编辑器、查看器面板；`compareView.ts` 比较面板
+  - `copybooks.ts` copybook 的读取与选择；`mapping.ts` 设置的保存（`.vscode/rdw-viewer.json`）
+  - `exporting.ts` 导出；`discriminator.ts` 判别字段；`layoutReport.ts` 解析详情；`config.ts` 设置
 - `media/` webview 前端（虚拟滚动表格）
+- `test/fixtures/examples.ts` 示例文件生成器；`test/integration/` 在真实 VS Code 中运行的测试
 
-以上模块中除 `extension.ts` 外都不依赖 VS Code，测试直接用 `node --test` 运行。
+`src/extension.ts` 和 `src/ext/` 以外的模块都不依赖 VS Code，测试直接用 `node --test` 运行。

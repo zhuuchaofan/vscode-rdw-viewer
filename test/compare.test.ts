@@ -308,7 +308,7 @@ test('忽略字段：异步比较的结果与同步相同', async () => {
 });
 
 test('差异报告：每个有差异的字段一行，只在一侧的记录一行；CSV 转义', async () => {
-  const { diffReportChunks } = await import('../src/compare');
+  const { diffReportChunks } = await import('../src/compareReport');
   const a = session(['001AAAA100', '002B,BB200', '004DDDD400']);
   const b = session(['001AAAA101', '002B"BB201', '003CCCC300']);
   const c = new CompareSession(a, b);
