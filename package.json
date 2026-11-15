@@ -2,7 +2,7 @@
   "name": "rdw-viewer",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "publisher": "zhuuchaofan",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -23,7 +23,14 @@
     "shift_jis",
     "variable length record",
     "mainframe",
-    "COPY句"
+    "COPY句",
+    "netcobol",
+    "fujitsu",
+    "富士通",
+    "zoned decimal",
+    "hex dump",
+    "compare",
+    "可変長レコード"
   ],
   "engines": {
     "vscode": "^1.85.0"
