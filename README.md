@@ -1,11 +1,38 @@
-# RDW Viewer
+# RDW Viewer — COBOL COPY句で可変長レコードファイルを表示・比較する VS Code 拡張機能
 
-日本語 | [中文](README.zh-CN.md)
+日本語 | [English](README.en.md) | [中文](README.zh-CN.md)
 
-![スクリーンショット](images/screenshot.png)
+**RDW（Record Descriptor Word）付きの可変長レコードファイル**を、VS Code 上で表として表示・比較する拡張機能です。
+1 レコードを 1 行とし、**COBOL の COPY句（コピー句・登録集原文）**に従って項目を横に並べ、COMP-3（パック 10 進）・COMP（2 進）・ゾーン 10 進の数値をデコードして表示します。
 
-**RDW（Record Descriptor Word）** 付きの可変長レコードファイルを VS Code で表示する拡張機能です。
-1 レコードを 1 行とし、COBOL の COPY句に従って項目を横に並べて表示します。
+![RDW Viewer：COPY句で項目に分けたレコード、セル情報、16 進ダンプ](images/screenshot.png)
+
+## こんなときに
+
+COBOL のバッチで作られたデータファイルは、改行がなく、数値はパック 10 進、文字は Shift_JIS のため、テキストエディターではほとんど読めません。RDW Viewer を使うと：
+
+- **RDW ファイルを表で確認**：1 レコード 1 行、COPY句の項目ごとに列を分けて表示します。
+- **COPY句をそのまま利用**：`PIC`・`USAGE`・`OCCURS`・`REDEFINES`・`SYNC`・入れ子の `COPY … REPLACING`、固定形式 / 可変形式 / 自由形式に対応します。
+- **2 つのデータファイルを比較**：テスト前後の出力などを左右に並べ、レコード番号またはキー項目で突き合わせて差分を強調します。
+
+## 主な機能
+
+- **COPY句による項目分割**：レコード長ごとに COPY句を指定。全長が一致する COPY句が 1 つだけなら自動で使います。
+- **数値のデコード**：COMP-3 / PACKED-DECIMAL、COMP / COMP-4 / BINARY、COMP-5、COMP-1 / COMP-2（IEEE・IBM 16 進浮動小数点）、ゾーン 10 進（SIGN SEPARATE を含む）。不正なデータは 16 進で表示し、正常値のようには見せません。
+- **複数レイアウトの混在**：レコード長ごとのタブ、項目値（レコード区分など）による COPY句の切り替え、REDEFINES のレイアウト切り替え。
+- **2 ファイルの比較**：スクロール同期の左右表示、差分のみ表示、前後の差分へ移動（Shift+F7 / F7）、除外項目、差分の CSV / TSV 出力。
+- **16 進ダンプ**：項目の境界を色分けし、表のセルと連動します。
+- **COPY句がなくても**：COMP-3 を自動判別して表示します（推定です）。
+- **RDW エラーの検出**：前後 RDW の不一致・長さ不正・途中切れをオフセット付きで表示し、次の正しいレコードから解析を続けます。
+- **CSV / TSV エクスポート**：Shift_JIS または BOM 付き UTF-8。
+- **大きなファイル**：ページ単位で読み込み、進行状況の表示と途中中止に対応します。
+
+## インストール
+
+- VS Code の拡張機能ビュー（`Ctrl+Shift+X`）で **RDW Viewer** を検索し、`zhuuchaofan.rdw-viewer` をインストールします。
+- または Quick Open（`Ctrl+P`）で `ext install zhuuchaofan.rdw-viewer` を実行します。
+
+VS Code 1.85 以降が必要です。
 
 ## ファイル形式
 
@@ -16,6 +43,10 @@
 - RDW はリトルエンディアン。先頭 2 バイトがレコード本体の長さ N、後半 2 バイトは使用しません（画面には表示しません）。
 - 前後の RDW が一致することでレコード境界を判定します。
 - レコード本体は既定で Shift_JIS としてデコードします。画面右上、または設定 `rdwViewer.encoding` で変更できます。
+
+数値は既定で**富士通 NetCOBOL** の内部表現に従ってデコードします。EBCDIC から変換済みのメインフレームのデータは、`binaryEndian` / `comp5Endian` を `big`、`floatFormat` を `ibm` にすると読めます（下記「数値の形式」を参照）。
+
+対応していない形式：IBM z/OS 形式の RDW（ビッグエンディアン・前 RDW のみ）、EBCDIC のままの文字データ、RDW のない固定長ファイル。
 
 ## サンプル
 
@@ -220,6 +251,10 @@ vsix の作成（自動でコンパイルされます）：
 ```bash
 npx vsce package
 ```
+
+## フィードバック
+
+不具合の報告や機能の要望は [GitHub Issues](https://github.com/zhuuchaofan/vscode-rdw-viewer/issues) へお願いします。機密情報を除いたサンプルファイルと COPY句を添えていただけると助かります。
 
 ## ライセンス
 

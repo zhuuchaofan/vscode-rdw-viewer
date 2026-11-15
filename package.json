@@ -2,10 +2,14 @@
   "name": "rdw-viewer",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "publisher": "zhuuchaofan",
   "license": "MIT",
   "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#1e3a5f",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/zhuuchaofan/vscode-rdw-viewer.git"
@@ -16,28 +20,42 @@
   "homepage": "https://github.com/zhuuchaofan/vscode-rdw-viewer#readme",
   "keywords": [
     "cobol",
-    "rdw",
     "copybook",
+    "copybook viewer",
+    "rdw",
+    "rdw file",
+    "record descriptor word",
+    "variable length record",
     "comp-3",
     "packed decimal",
-    "shift_jis",
-    "variable length record",
-    "mainframe",
-    "COPY句",
-    "netcobol",
-    "fujitsu",
-    "富士通",
     "zoned decimal",
+    "binary file",
     "hex dump",
     "compare",
-    "可変長レコード"
+    "diff",
+    "csv export",
+    "shift_jis",
+    "sjis",
+    "mainframe",
+    "netcobol",
+    "fujitsu",
+    "japanese",
+    "COPY句",
+    "可変長レコード",
+    "可変長",
+    "パック10進",
+    "ゾーン10進",
+    "16進ダンプ",
+    "富士通",
+    "コピー句",
+    "变长记录"
   ],
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Visualization",
-    "Other"
+    "Data Science",
+    "Visualization"
   ],
   "main": "./out/src/extension.js",
   "activationEvents": [],

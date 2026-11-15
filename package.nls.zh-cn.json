@@ -1,5 +1,5 @@
 {
-  "displayName": "RDW Viewer",
+  "displayName": "RDW Viewer – COBOL Copybook 数据查看器",
   "editor.displayName": "RDW Viewer",
   "description": "查看带 RDW（前后 4 字节小端序）的可变长记录文件：按富士通 NetCOBOL 的 copybook 拆分字段，解码 COMP-3 / COMP / 区位十进制，支持 16 进制转储、两个文件比较和 CSV / TSV 导出",
   "command.open": "用 RDW Viewer 打开",
