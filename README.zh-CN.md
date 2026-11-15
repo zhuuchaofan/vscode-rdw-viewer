@@ -1,6 +1,6 @@
 # RDW Viewer
 
-[English](README.md) | [日本語](README.ja.md) | 中文
+[日本語](README.md) | [English](README.en.md) | 中文
 
 ![截图](images/screenshot.png)
 

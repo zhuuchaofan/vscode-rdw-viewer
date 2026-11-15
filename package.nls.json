@@ -1,7 +1,7 @@
 {
-  "displayName": "RDW Viewer – COBOL Copybook Data Viewer",
+  "displayName": "RDW Viewer – COBOL COPY句（Copybook）データビューアー",
   "editor.displayName": "RDW Viewer",
-  "description": "View and compare RDW variable-length record files with COBOL copybooks (COPY句). Decodes COMP-3 / COMP / zoned decimal and Shift_JIS text, with hex dump, two-file diff and CSV / TSV export. Fujitsu NetCOBOL format. UI in Japanese / Chinese.",
+  "description": "RDW 付き可変長レコードファイルを COBOL の COPY句で項目に分けて表示・比較。COMP-3（パック 10 進）/ COMP / ゾーン 10 進と Shift_JIS をデコードし、16 進ダンプ、2 ファイルの比較、CSV / TSV エクスポートに対応（富士通 NetCOBOL 形式） / View and compare RDW variable-length record files with COBOL copybooks.",
   "command.open": "RDW Viewer で開く",
   "config.title": "RDW Viewer",
   "config.encoding": "レコード本体の既定の文字コード（WHATWG のエンコーディング名。例：shift_jis、utf-8、euc-jp）。",
