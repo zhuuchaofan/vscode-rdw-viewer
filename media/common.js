@@ -122,9 +122,14 @@
     });
     const selField = opts.selCol === undefined ? -1 : info.fields.findIndex((f) => f.col === opts.selCol);
     const other = opts.other;
+    // 字段首/尾字节加 fst / fen：画出分界竖线和圆角，相邻字段即使颜色接近也能分清
     const cls = (i) => {
       const f = fieldAt[i];
       let c = f < 0 ? '' : f % 2 ? ' fb' : ' fa';
+      if (f >= 0) {
+        if (i === 0 || fieldAt[i - 1] !== f) c += ' fst';
+        if (i === n - 1 || fieldAt[i + 1] !== f) c += ' fen';
+      }
       if (f >= 0 && f === selField) c += ' fs';
       if (other && (i >= other.length || other[i] !== bytes[i])) c += ' dd';
       return c;
@@ -151,7 +156,9 @@
       let tx = '';
       let carried = true; // 行首仍是上一行多字节字符的后续字节
       for (let i = start; i < end; i++) {
-        hx += `<span class="b${cls(i)}${i - start === 8 ? ' g8' : ''}" data-i="${i}">${hex2(bytes[i])}</span>`;
+        // +8 前的空隙：同一字段跨过时用 g8c（空隙也着色），否则 g8（空隙留白）
+        const g8 = i - start !== 8 ? '' : fieldAt[i] >= 0 && fieldAt[i] === fieldAt[i - 1] ? ' g8c' : ' g8';
+        hx += `<span class="b${cls(i)}${g8}" data-i="${i}">${hex2(bytes[i])}</span>`;
         if (chars[i] === '') {
           // 上一行的多字节字符的后续字节：留出位置保持对齐
           if (carried) tx += `<span class="t w1${cls(i)}" data-i="${i}"></span>`;
@@ -163,6 +170,8 @@
         const w = Math.min(j - i, end - i, 4);
         tx += `<span class="t w${w}${cls(i)}" data-i="${i}">${esc(chars[i])}</span>`;
       }
+      // 最后一行不足 16 字节时补空位，文字栏与上面各行对齐
+      for (let i = end; i < start + PER_LINE; i++) hx += `<span class="b${i - start === 8 ? ' g8' : ''}"></span>`;
       lines.push(
         `<div class="dline"><span class="doff">${start.toString(16).toUpperCase().padStart(4, '0')}</span>` +
           `<span class="dhex">${hx}</span><span class="dtxt">${tx}</span></div>`

@@ -296,6 +296,7 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 .dline .dhex { flex: 0 0 auto; display: inline-flex; }
 .dline .dhex .b { width: 3ch; text-align: center; cursor: pointer; }
 .dline .dhex .b.g8 { margin-left: 1ch; }
+.dline .dhex .b.g8c { padding-left: 1ch; }
 .dline .dtxt { margin-left: 2ch; display: inline-flex; }
 .dline .t { display: inline-block; overflow: visible; cursor: pointer; }
 .dline .t.w1 { width: 1ch; }
@@ -304,10 +305,21 @@ button.primary:hover { background: var(--vscode-button-hoverBackground); }
 .dline .t.w4 { width: 4ch; }
 .druler { opacity: 0.45; }
 .druler .b { cursor: default; }
-/* 字段交替着色、选中字段、与比较对象不同的字节 */
-.dump .fa { background: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 12%, transparent); }
-.dump .fb { background: color-mix(in srgb, var(--vscode-charts-green, #388a34) 12%, transparent); }
-.dump .fs { background: var(--vscode-editor-selectionBackground, rgba(0, 120, 215, 0.35)); }
+/* 字段着色：两种色相交替，字段首字节左侧画分界竖线，首尾圆角；选中字段加深并描边 */
+.dump {
+  --fld-a: color-mix(in srgb, var(--vscode-charts-blue, #3794ff) 22%, transparent);
+  --fld-b: color-mix(in srgb, var(--vscode-charts-orange, #d18616) 22%, transparent);
+  --fld-edge: color-mix(in srgb, var(--vscode-foreground, #888) 55%, transparent);
+  --fld-sel: var(--vscode-focusBorder, #0078d4);
+}
+.dump .fa { background: var(--fld-a); }
+.dump .fb { background: var(--fld-b); }
+.dump .fst { box-shadow: inset 2px 0 0 var(--fld-edge); border-top-left-radius: 3px; border-bottom-left-radius: 3px; }
+.dump .fen { border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
+.dump .fs { background: var(--vscode-editor-selectionBackground, rgba(0, 120, 215, 0.35)); box-shadow: inset 0 1px 0 var(--fld-sel), inset 0 -1px 0 var(--fld-sel); }
+.dump .fs.fst { box-shadow: inset 2px 0 0 var(--fld-sel), inset 0 1px 0 var(--fld-sel), inset 0 -1px 0 var(--fld-sel); }
+.dump .fs.fen { box-shadow: inset -1px 0 0 var(--fld-sel), inset 0 1px 0 var(--fld-sel), inset 0 -1px 0 var(--fld-sel); }
+.dump .fs.fst.fen { box-shadow: inset 2px 0 0 var(--fld-sel), inset -1px 0 0 var(--fld-sel), inset 0 1px 0 var(--fld-sel), inset 0 -1px 0 var(--fld-sel); }
 .dump .dd { color: var(--vscode-editorError-foreground, var(--err)); font-weight: 700; text-decoration: underline; }
 .dump [data-i]:hover { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 
