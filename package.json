@@ -6,6 +6,10 @@
   "publisher": "zhuuchaofan",
   "license": "MIT",
   "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#1e3a5f",
+    "theme": "dark"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/zhuuchaofan/vscode-rdw-viewer.git"
@@ -16,21 +20,31 @@
   "homepage": "https://github.com/zhuuchaofan/vscode-rdw-viewer#readme",
   "keywords": [
     "cobol",
-    "rdw",
     "copybook",
+    "copybook viewer",
+    "rdw",
+    "record descriptor word",
+    "variable length record",
     "comp-3",
     "packed decimal",
-    "shift_jis",
-    "variable length record",
-    "mainframe",
-    "COPY句",
-    "netcobol",
-    "fujitsu",
-    "富士通",
     "zoned decimal",
+    "binary file",
     "hex dump",
     "compare",
-    "可変長レコード"
+    "diff",
+    "csv export",
+    "shift_jis",
+    "sjis",
+    "mainframe",
+    "netcobol",
+    "fujitsu",
+    "japanese",
+    "COPY句",
+    "可変長レコード",
+    "パック10進",
+    "富士通",
+    "コピー句",
+    "变长记录"
   ],
   "engines": {
     "vscode": "^1.85.0"
