@@ -1,7 +1,7 @@
 {
   "displayName": "RDW Viewer",
   "editor.displayName": "RDW Viewer",
-  "description": "RDW（前後 4 バイト・リトルエンディアン）付き可変長レコードファイルのビューアー。COBOL の COPY句による項目表示、COMP-3 のデコードに対応",
+  "description": "RDW（前後 4 バイト・リトルエンディアン）付き可変長レコードファイルのビューアー。富士通 NetCOBOL の COPY句で項目に分けて表示し、COMP-3 / COMP / ゾーン 10 進をデコード。16 進ダンプ、2 ファイルの比較、CSV / TSV エクスポートに対応",
   "command.open": "RDW Viewer で開く",
   "config.title": "RDW Viewer",
   "config.encoding": "レコード本体の既定の文字コード（WHATWG のエンコーディング名。例：shift_jis、utf-8、euc-jp）。",

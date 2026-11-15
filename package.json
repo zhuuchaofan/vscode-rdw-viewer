@@ -23,7 +23,14 @@
     "shift_jis",
     "variable length record",
     "mainframe",
-    "COPY句"
+    "COPY句",
+    "netcobol",
+    "fujitsu",
+    "富士通",
+    "zoned decimal",
+    "hex dump",
+    "compare",
+    "可変長レコード"
   ],
   "engines": {
     "vscode": "^1.85.0"
