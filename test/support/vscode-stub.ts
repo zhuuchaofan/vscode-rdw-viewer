@@ -185,7 +185,7 @@ export const workspace = {
     writeFile: async () => {},
     stat: async (u: Uri) => {
       const st = await nodeFs.promises.stat(u.fsPath);
-      return { type: st.isFile() ? FileType.File : FileType.Directory, size: st.size };
+      return { type: st.isFile() ? FileType.File : FileType.Directory, size: st.size, mtime: st.mtimeMs };
     },
     delete: async () => {},
     createDirectory: async () => {},

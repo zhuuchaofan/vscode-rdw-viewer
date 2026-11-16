@@ -33,6 +33,13 @@ export interface ScanProgress {
   onProgress?: (fraction: number) => void;
   /** 连续占用事件循环的最长时间（毫秒）；省略时为 30 */
   sliceMs?: number;
+  /**
+   * 扫描开始超过 snapshotAfterMs 毫秒仍未结束时，调用一次 onSnapshot，交出「目前为止」的索引
+   * （文件开头连续的一部分），让调用方先显示这些记录。快照之后扫描照常继续，最后仍返回完整索引。
+   * 返回 Promise 时，扫描等它完成后再继续（让调用方先用快照把界面显示出来，不与扫描争抢时间）。
+   */
+  onSnapshot?: (partial: RdwIndex) => void | Promise<void>;
+  snapshotAfterMs?: number;
 }
 
 export const RDW_SIZE = 4;
@@ -104,6 +111,22 @@ class IndexBuilder {
     this.offsets[i] = off;
     this.lengths[i] = skipped;
     this.isError[i] = 1;
+  }
+
+  /**
+   * 目前为止的索引（不拷贝）：之后的追加只写入 count 之后的位置，扩容时换成新数组，
+   * 所以快照中已有的条目不会再变化。
+   */
+  snapshot(size: number): RdwIndex {
+    const n = this.count;
+    return {
+      size,
+      count: n,
+      offsets: this.offsets.subarray(0, n),
+      lengths: this.lengths.subarray(0, n),
+      isError: this.isError.subarray(0, n),
+      errors: this.errors,
+    };
   }
 
   finish(size: number): RdwIndex {
@@ -178,12 +201,13 @@ function chainValidAt(src: ByteSource, raw: Uint8Array | undefined, size: number
 /**
  * 分批扫描生成器：供同步 scanRdw 与异步可取消 scanRdwAsync 共用同一套逻辑。
  */
-function* scanGenerator(input: Uint8Array | ByteSource): Generator<number, RdwIndex> {
+function* scanGenerator(input: Uint8Array | ByteSource, onBuilder?: (snapshot: () => RdwIndex) => void): Generator<number, RdwIndex> {
   const src = toByteSource(input);
   const raw = src.raw;
   const size = src.size;
   const est = size === 0 ? 16 : Math.min(1 << 20, Math.max(64, Math.ceil(size / 128)));
   const builder = new IndexBuilder(est);
+  onBuilder?.(() => builder.snapshot(size));
 
   /**
    * 从 pos 之后逐字节寻找下一个可信的记录边界。
@@ -280,10 +304,28 @@ export async function scanRdwAsync(
   if (opts.isCancelled?.()) {
     return undefined;
   }
-  const it = scanGenerator(input);
-  let last = performance.now();
+  let snapshot: (() => RdwIndex) | undefined;
+  const it = scanGenerator(input, (s) => (snapshot = s));
+  const started = performance.now();
+  let snapshotDone = !opts.onSnapshot;
+  let last = started;
   let r = it.next();
   while (!r.done) {
+    if (!snapshotDone && performance.now() - started >= (opts.snapshotAfterMs ?? 0)) {
+      // 开头还没有任何条目（例如一开始就是大段损坏数据）时等下一次
+      const partial = snapshot!();
+      if (partial.count > 0) {
+        snapshotDone = true;
+        const wait = opts.onSnapshot!(partial);
+        if (wait) {
+          await wait;
+          if (opts.isCancelled?.()) {
+            return undefined;
+          }
+          last = performance.now();
+        }
+      }
+    }
     if (performance.now() - last >= (opts.sliceMs ?? DEFAULT_SLICE_MS)) {
       opts.onProgress?.(r.value);
       await new Promise<void>((resolve) => setImmediate(resolve));

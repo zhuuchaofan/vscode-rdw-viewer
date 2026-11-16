@@ -47,3 +47,50 @@ test('自动选中的 copybook 中的 COPY 被展开，REPLACING 生效，提示
   assert.match(g.banner.text, /members\/DETAIL\.cpy/);
   doc.dispose();
 });
+
+test('工作区 copybook 一览被缓存：再次打开不再重新查找 COPY 原文；原文改变后重新解析', async () => {
+  vscode.state.reset();
+  vscode.state.workspaceRoot = root;
+  const provider = vscode.state.providers.get(ext.EDITOR_VIEW_TYPE) as {
+    openCustomDocument(u: unknown, c: unknown, t: unknown): Promise<{ dispose(): void }>;
+    resolveCustomEditor(d: unknown, p: unknown, t: unknown): Promise<void>;
+  };
+  // 统计为 COPY 查找原文的次数（copybook 一览本身的查找除外）
+  const origFind = vscode.workspace.findFiles;
+  let memberLookups = 0;
+  vscode.workspace.findFiles = async (include: string, ...rest: [string?, number?]) => {
+    if (!include.includes('cpy,CPY')) memberLookups++;
+    return origFind(include, ...rest);
+  };
+  const open = async () => {
+    memberLookups = 0;
+    const doc = await provider.openCustomDocument(vscode.Uri.file(path.join(root, 'data.dat')), {}, { isCancellationRequested: false });
+    const panel = new vscode.FakePanel();
+    await provider.resolveCustomEditor(doc, panel, {});
+    await panel.receive({ type: 'ready' });
+    const init = panel.posted.find((m) => m.type === 'init') as unknown as { groups: Array<{ copybookName: string | null }> };
+    doc.dispose();
+    return { name: init.groups[0].copybookName, lookups: memberLookups };
+  };
+  try {
+    // 上一个用例已经打开过一次：一览使用缓存，只有为显示而读取 MAIN.cpy 时查找一次原文（不缓存时为 2 次）
+    for (let i = 0; i < 2; i++) {
+      const again = await open();
+      assert.equal(again.name, 'MAIN.cpy');
+      assert.equal(again.lookups, 1);
+    }
+
+    // 原文变长：MAIN.cpy 的总长度不再是 10，不能沿用缓存中的长度自动选中
+    const member = path.join(root, 'members', 'DETAIL.cpy');
+    const orig = fs.readFileSync(member, 'utf8');
+    fs.writeFileSync(member, '   05 D1 PIC X(:L:).\n   05 D2 PIC X(3).\n');
+    try {
+      const third = await open();
+      assert.equal(third.name, null);
+    } finally {
+      fs.writeFileSync(member, orig);
+    }
+  } finally {
+    vscode.workspace.findFiles = origFind;
+  }
+});

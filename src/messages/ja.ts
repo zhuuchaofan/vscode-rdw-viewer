@@ -132,6 +132,8 @@ export const ja: Record<MessageKey, string> = {
   'ext.export.failed': 'エクスポートに失敗しました：{error}',
   // ---- webview ----
   'ui.cellHint': 'セルをクリックすると、ここに項目値と元のバイトを表示します',
+  'ui.scanning': '読み込み中（読み込んだ分を先に表示）…',
+  'ui.scanningTitle': 'ファイルが大きいため残りをバックグラウンドで読み込んでいます。完了すると件数とタブが自動で更新されます。エクスポートなどは読み込み完了後に実行されます。',
   'ui.export': 'エクスポート…',
   'ui.exportTitle': '現在のタブを CSV / TSV にエクスポートします',
   'ui.exportAll': 'すべてエクスポート…',
