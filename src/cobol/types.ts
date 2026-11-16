@@ -23,6 +23,9 @@ export interface CopyField {
   signSeparate: boolean;
   /** 符号在前（SIGN LEADING）；默认在后 */
   signLeading: boolean;
+  /** 内部布尔项目（USAGE BIT）：在 offset 那个字节中的起始位（0=最高位）和位数 */
+  bitOffset?: number;
+  bits?: number;
   /** 位于无法准确计算位置的定义之后：位置、长度可能与实际不同 */
   suspect?: boolean;
 }

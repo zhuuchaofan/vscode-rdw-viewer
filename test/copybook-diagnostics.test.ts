@@ -306,10 +306,15 @@ test('BINARY-CHAR / SHORT / LONG / DOUBLE：长度按类型，值按本地字节
   assert.deepEqual((s.getRows('L16', 0, 1)[0] as RecRow).c, ['255', '-1234', '-1234', '+1234', 'A']);
 });
 
-test('INDEX / POINTER（64 位环境为 8 字节）、BIT：布局不可信', () => {
+test('INDEX / POINTER（64 位环境为 8 字节）：布局不可信', () => {
   assert.equal(layout('01 R. 05 A INDEX. 05 B PIC X.').trust, 'untrusted');
   assert.equal(layout('01 R. 05 A POINTER. 05 B PIC X.').trust, 'untrusted');
-  assert.equal(layout('01 R. 05 A PIC 1(8) BIT. 05 B PIC X.').trust, 'untrusted');
+});
+
+test('BIT：按位紧接排列，位置可信（值只显示十六进制）', () => {
+  const r = layout('01 R. 05 A PIC 1(8) BIT. 05 B PIC X.');
+  assert.equal(r.trust, 'partial');
+  assert.deepEqual(r.fields, [['A', 0, 1], ['B', 1, 1]]);
 });
 
 test('TYPEDEF 不作为记录；TYPE 引用无法展开 → 布局不可信（只报告一次）', () => {

@@ -126,6 +126,59 @@ function pushSlack(ctx: EmitCtx, offset: number, length: number): void {
   });
 }
 
+/** 内部布尔项目（USAGE BIT 的基本项目）：按位分配 */
+function isBitItem(node: Node, inh: Inherited): boolean {
+  if (node.marker) return false;
+  const me = inherit(node, inh);
+  return me.usage === 'BIT' && isElementary(node, me.usage);
+}
+
+/**
+ * 展开一串连续的内部布尔项目（NetCOBOL 文法書 BIT 句、ALIGNED 句）：
+ * 每个项目（含 OCCURS 的每次重复）占 PIC 中 1 的个数那么多位，从前一个项目的下一位开始紧接着排列；
+ * 整串从字节边界开始，结束时补齐到字节边界（之后的项目、组项目都从字节边界开始）。
+ * 字段的偏移 / 长度为它的位所在的字节范围，bitOffset / bits 为字节内的位置和位数。
+ */
+function emitBits(run: Node[], offset: number, idx: number[], inh: Inherited, ctx: EmitCtx): number {
+  let bit = 0;
+  for (const node of run) {
+    for (const is of node.issues) {
+      addIssue(ctx, { ...is, from: offset + Math.floor(bit / 8) });
+    }
+    const me = inherit(node, inh);
+    const n = picInfo(node.pic ?? '', 'DISPLAY', false).length;
+    if (node.aligned && bit % 8 !== 0) {
+      bit += 8 - (bit % 8);
+    }
+    for (let r = 1; r <= node.occurs; r++) {
+      const ix = node.occurs > 1 ? [...idx, r] : idx;
+      const start = Math.floor(bit / 8);
+      const end = Math.ceil((bit + n) / 8);
+      addIssue(ctx, { level: 'value', text: t('cpy.bit', { name: node.name }) });
+      ctx.out.push({
+        name: node.name + (ix.length ? `(${ix.join(',')})` : ''),
+        pic: `${node.pic ?? ''} BIT`.trim(),
+        offset: offset + start,
+        length: Math.max(1, end - start),
+        type: 'bin',
+        signed: false,
+        usage: me.usage,
+        scale: 0,
+        digits: 0,
+        signSeparate: false,
+        signLeading: false,
+        bitOffset: bit - start * 8,
+        bits: n,
+      });
+      bit += n;
+    }
+    if (node.odo) {
+      ctx.odo.push({ name: node.name, end: offset + Math.ceil(bit / 8) });
+    }
+  }
+  return offset + Math.ceil(bit / 8);
+}
+
 /**
  * 展开一个项目，返回结束偏移。
  *
@@ -148,6 +201,9 @@ function emit(node: Node, offset: number, idx: number[], path: string, inh: Inhe
   if (!elementary && node.children.length === 0 && !node.issues.some((x) => x.level === 'layout')) {
     addIssue(ctx, { level: 'layout', text: t('cpy.noPic', { name: node.name }), from: offset });
   }
+  if (elementary && me.usage === 'BIT') {
+    return emitBits([node], offset, idx, inh, ctx);
+  }
   let off = offset;
   const lead = leadBoundary(node, inh);
   if (lead > 0 && off % lead !== 0 && (!leading || elementary)) {
@@ -164,8 +220,6 @@ function emit(node: Node, offset: number, idx: number[], path: string, inh: Inhe
       const picText = node.pic ?? '';
       if (me.usage === 'INDEX' || me.usage === 'POINTER') {
         addIssue(ctx, { level: 'layout', text: t('cpy.pointer', { name: node.name, usage: me.usage }), from: off });
-      } else if (me.usage === 'BIT') {
-        addIssue(ctx, { level: 'layout', text: t('cpy.bit', { name: node.name }), from: off });
       }
       ctx.out.push({
         name: node.name + (ix.length ? `(${ix.join(',')})` : ''),
@@ -201,10 +255,22 @@ function emitChildren(children: Node[], offset: number, idx: number[], path: str
   let off = offset;
   /** 还没有展开任何项目：下一个项目是这个组的第一个项目 */
   let first = true;
-  for (const slot of groupSlots(children)) {
+  const slots = groupSlots(children);
+  for (let k = 0; k < slots.length; k++) {
+    const slot = slots[k];
     if (slot.orphan) {
       // 找不到 REDEFINES 的对象：这个项目被忽略，它可能比原项目长，区域大小因此可能不对
       addIssue(ctx, { level: 'layout', text: t('cpy.redefinesTarget', { name: slot[0].name, target: slot[0].redefines ?? '' }), from: off });
+      continue;
+    }
+    if (slot.length === 1 && isBitItem(slot[0], inh)) {
+      // 连续的内部布尔项目按位紧接着排列，作为一组展开
+      const run = [slot[0]];
+      while (k + 1 < slots.length && slots[k + 1].length === 1 && !slots[k + 1].orphan && isBitItem(slots[k + 1][0], inh) && !slots[k + 1][0].aligned) {
+        run.push(slots[++k][0]);
+      }
+      off = emitBits(run, off, idx, inh, ctx);
+      first = false;
       continue;
     }
     if (slot.length === 1) {

@@ -23,6 +23,8 @@ export interface Node {
   /** 本项目写明的 SIGN 子句（未写时继承上级） */
   sign?: { separate: boolean; leading: boolean };
   sync: boolean;
+  /** ALIGNED：内部布尔项目从字节边界开始 */
+  aligned?: boolean;
   /** 01 TYPEDEF：类型定义，不是记录 */
   typedef: boolean;
   /** 不对应数据的占位：记录中途无法处理的语句（COPY 等），只用来在该位置报告问题 */
@@ -36,7 +38,7 @@ export interface Node {
 const CLAUSE_STARTS = new Set([
   'PIC', 'PICTURE', 'USAGE', 'OCCURS', 'REDEFINES', 'SIGN', 'LEADING', 'TRAILING', 'SYNC', 'SYNCHRONIZED',
   'JUSTIFIED', 'JUST', 'BLANK', 'EXTERNAL', 'GLOBAL', 'VALUE', 'VALUES', 'INDEXED', 'ASCENDING', 'DESCENDING',
-  'DEPENDING', 'CHARACTER', 'PRINTING', 'BASED', 'TYPE', 'TYPEDEF',
+  'DEPENDING', 'CHARACTER', 'PRINTING', 'BASED', 'TYPE', 'TYPEDEF', 'ALIGNED',
   'COMPUTATIONAL', 'COMPUTATIONAL-1', 'COMPUTATIONAL-2', 'COMPUTATIONAL-3', 'COMPUTATIONAL-4', 'COMPUTATIONAL-5',
   ...USAGE_WORDS,
 ]);
@@ -185,6 +187,9 @@ export function parseStatement(stmt: string): Node | Directive | undefined {
     } else if (k === 'JUSTIFIED' || k === 'JUST') {
       i++;
       skipWords('RIGHT');
+    } else if (k === 'ALIGNED') {
+      node.aligned = true;
+      i++;
     } else if (k === 'EXTERNAL' || k === 'GLOBAL') {
       i++;
     } else if (k === 'INDEXED') {

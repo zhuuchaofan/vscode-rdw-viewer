@@ -20,7 +20,7 @@ export const zh = {
   'cpy.odoTail': '{name}：OCCURS DEPENDING ON 按最大次数展开，超出实际次数的部分是无效数据',
   'cpy.redefinesTarget': '{name}：REDEFINES 的对象 {target} 不在它前面的同级项目中，已忽略（区域大小可能不对）',
   'cpy.pointer': '{name}：USAGE {usage} 按 4 字节计算（64 位环境为 8 字节）',
-  'cpy.bit': '{name}：不支持 USAGE BIT（内部布尔项目），这个字段的长度可能不对',
+  'cpy.bit': '{name}：USAGE BIT（内部布尔项目）按位紧接排列计算位置；值以所在字节的十六进制显示',
   'cpy.type': '{name}：不支持 TYPE {type}（按类型定义展开），这个字段的长度可能不对',
   'cpy.copyNotFound': '找不到 COPY {member} 引用的 copybook，没有展开，这个位置以后的字段位置可能不对',
   'cpy.copyFormLib': 'COPY {member}（XMDLIB / XFDLIB 的画面、帐票定义）无法展开，这个位置以后的字段位置可能不对',

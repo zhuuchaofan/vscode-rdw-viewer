@@ -352,3 +352,50 @@ test('固定格式：日文项目名按字节计列，73~80 列的标识区不�
   assert.deepEqual(layout(cb.fields), [['顧客番号', 0, 8], ['顧客名', 8, 30], ['ｶﾅ名', 38, 20]]);
   assert.deepEqual(cb.warnings, []);
 });
+
+test('USAGE BIT：连续的内部布尔项目按位紧接排列，之后的项目从字节边界开始', () => {
+  // 四个 30 位：120 位 = 15 字节（以前按 1 位 1 字节算成 120 字节）
+  const cb = parseCopybook(`
+    01 R.
+       05 A PIC X(2).
+       05 F1 PIC 1(30) BIT.
+       05 F2 PIC 1(30) BIT.
+       05 F3 PIC 1(30) BIT.
+       05 F4 PIC 1(30) BIT.
+       05 B PIC X(3).
+  `);
+  assert.deepEqual(
+    cb.fields.map((f) => [f.name, f.offset, f.length, f.bitOffset, f.bits]),
+    [
+      ['A', 0, 2, undefined, undefined],
+      ['F1', 2, 4, 0, 30],
+      ['F2', 5, 5, 6, 30],
+      ['F3', 9, 5, 4, 30],
+      ['F4', 13, 4, 2, 30],
+      ['B', 17, 3, undefined, undefined],
+    ]
+  );
+  assert.equal(cb.totalLength, 20);
+});
+
+test('USAGE BIT：OCCURS、组项目的 USAGE BIT 继承、ALIGNED、组项目从字节边界开始', () => {
+  const occ = parseCopybook('01 R. 05 F PIC 1 BIT OCCURS 12. 05 B PIC X.');
+  assert.deepEqual(occ.fields.map((f) => [f.name, f.offset, f.bitOffset]).slice(7, 9), [['F(8)', 0, 7], ['F(9)', 1, 0]]);
+  assert.equal(occ.totalLength, 3);
+
+  const grp = parseCopybook(`
+    01 R.
+       05 G USAGE BIT OCCURS 3.
+          10 G1 PIC 1(3).
+          10 G2 PIC 1(2).
+       05 H PIC 1(4) BIT.
+       05 I PIC 1(4) BIT ALIGNED.
+  `);
+  // G 的每次重复 5 位 → 补齐到 1 字节；H 和 I 不连在一起（ALIGNED）
+  assert.deepEqual(
+    grp.fields.map((f) => [f.name, f.offset, f.bitOffset]),
+    [['G1(1)', 0, 0], ['G2(1)', 0, 3], ['G1(2)', 1, 0], ['G2(2)', 1, 3], ['G1(3)', 2, 0], ['G2(3)', 2, 3], ['H', 3, 0], ['I', 4, 0]]
+  );
+  assert.equal(grp.totalLength, 5);
+  assert.equal(grp.records[0].trust, 'partial');
+});
