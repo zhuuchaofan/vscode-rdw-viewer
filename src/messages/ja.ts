@@ -21,7 +21,7 @@ export const ja: Record<MessageKey, string> = {
   'cpy.odoTail': '{name}: OCCURS DEPENDING ON は最大回数で展開しました。実際の回数を超える出現は無効なデータです',
   'cpy.redefinesTarget': '{name}: REDEFINES の対象 {target} が直前の同レベル項目にないため、無視しました（領域の大きさが正しくない可能性があります）',
   'cpy.pointer': '{name}: USAGE {usage} は 4 バイトとして計算しました（64 ビット環境では 8 バイト）',
-  'cpy.bit': '{name}: USAGE BIT（内部ブール項目）には対応していません。この項目の長さは正しくない可能性があります',
+  'cpy.bit': '{name}: USAGE BIT（内部ブール項目）はビット単位で詰めて配置して位置を計算しています。値は該当バイトの16進で表示します',
   'cpy.type': '{name}: TYPE {type}（型の展開）には対応していません。この項目の長さは正しくない可能性があります',
   'cpy.copyNotFound': 'COPY {member} の登録集原文が見つからないため展開していません。この位置以降の項目の位置は正しくない可能性があります',
   'cpy.copyFormLib': 'COPY {member}（XMDLIB / XFDLIB の画面・帳票定義）は展開できません。この位置以降の項目の位置は正しくない可能性があります',
