@@ -105,13 +105,38 @@
         return;
       }
       const px = colPx(col);
-      vis.push({ i, col, px });
+      vis.push({ i, col, px, x: total });
       total += px;
     });
     const res = { vis, total };
     colCache.set(key + '|' + state.hideFiller, res);
     return res;
   }
+
+  /**
+   * 横向只渲染屏幕附近的列：字段很多（几百列）时，每次滚动重画全部单元格要几百毫秒。
+   * 返回 [from, to) 与左侧留白宽度 padL；屏幕左右各多渲染约一屏，横向小幅滚动时不会露白。
+   */
+  const COL_MARGIN = 1;
+  function colWindow(vis) {
+    const n = vis.length;
+    const w = Math.max($scroller.clientWidth, 800);
+    const lo = $scroller.scrollLeft - w * COL_MARGIN;
+    const hi = $scroller.scrollLeft + w * (1 + COL_MARGIN);
+    let a = 0;
+    let b = n;
+    while (a < b) {
+      const m = (a + b) >> 1;
+      if (vis[m].x + vis[m].px <= lo) a = m + 1;
+      else b = m;
+    }
+    let to = a;
+    while (to < n && vis[to].x < hi) to++;
+    return { from: a, to, padL: a < n ? vis[a].x : 0 };
+  }
+
+  /** 左侧留白：代替窗口之前未渲染的列，保持后面的列位置不变 */
+  const padHtml = (padL) => (padL > 0 ? `<div class="sp" data-w="${padL}"></div>` : '');
 
   /** 固定表头的行数：文件顺序视图没有（表头随记录插入），错误视图 1 行，其余 3 行 */
   function hdrRowsOf(view) {
@@ -147,6 +172,7 @@
       (d.version ? `<span class="meta">v${esc(d.version)}</span>` : '') +
       `<span class="meta">${sizeKB} · ${esc(S('records', { n: d.total - d.errorCount }))}` +
       (d.errorCount ? ` · <span class="st-err">${esc(S('errors', { n: d.errorCount }))}</span>` : '') +
+      (d.scanning ? ` · <span class="scanning" title="${esc(S('scanningTitle'))}">${esc(S('scanning'))}</span>` : '') +
       `</span><span class="spacer"></span>` +
       `<label title="${esc(S('autoPackedTitle'))}"><input type="checkbox" id="autoPacked" ${d.autoPacked ? 'checked' : ''}>${esc(S('autoPacked'))}</label>` +
       `<label title="${esc(S('hideFillerTitle'))}"><input type="checkbox" id="hideFiller" ${state.hideFiller ? 'checked' : ''}>${esc(S('hideFiller'))}</label>` +
@@ -347,11 +373,19 @@
 
   function headerRowHtml(key, k, isAbs, top) {
     const { vis } = visibleCols(key);
+    const win = colWindow(vis);
     const label = key === ERR_VIEW ? '#' : [S('hdrName'), S('hdrPic'), S('hdrPos')][k].replace(/ /g, '');
     const gc = state.view === ORDER_VIEW ? groupColor(key) : '';
     let html = `<div class="row hdrrow k${k}${gc}" ${isAbs ? `data-top="${top}"` : ''}>`;
     html += `<div class="c l lh hd">${label}</div>`;
-    return html + C.headerCells(vis, k) + '</div>';
+    return html + padHtml(win.padL) + C.headerCells(vis.slice(win.from, win.to), k) + '</div>';
+  }
+
+  /** 固定表头当前渲染的列窗口；横向滚动使窗口变化时重画表头 */
+  function hdrWinKey() {
+    if (state.view === ORDER_VIEW) return '';
+    const w = colWindow(visibleCols(state.view).vis);
+    return state.view + '|' + w.from + '-' + w.to;
   }
 
   function renderStaticHeader() {
@@ -366,6 +400,7 @@
     for (let k = 0; k < hdrRowsOf(state.view); k++) rows.push(headerRowHtml(state.view, k, false));
     $hdr.innerHTML = rows.join('');
     applyLayout($hdr);
+    state.hdrWin = hdrWinKey();
   }
 
   /* ---------- 行 ---------- */
@@ -388,7 +423,10 @@
     }
     html += `<div class="c l l2">${status}</div>`;
     const warnSet = isErr ? null : new Set(row.w);
-    for (const { i: ci, col, px } of vis) {
+    const win = colWindow(vis);
+    html += padHtml(win.padL);
+    for (let vi = win.from; vi < win.to; vi++) {
+      const { i: ci, col, px } = vis[vi];
       const text = row.c[ci];
       const isW = warnSet && warnSet.has(ci);
       const sel =
@@ -452,6 +490,7 @@
     }
     $rows.innerHTML = html;
     applyLayout($rows);
+    if (state.hdrWin !== hdrWinKey()) renderStaticHeader();
   }
 
   function resetView(keepScroll) {
@@ -501,7 +540,16 @@
     vscode.postMessage({ type: 'cellInfo', g: state.dump.groupKey, e: state.dump.entry, col });
     draw();
     renderDump();
-    const el = $rows.querySelector('.c.f.sel');
+    let el = $rows.querySelector('.c.f.sel');
+    if (!el) {
+      // 该列在渲染窗口之外：先横向滚动到它附近再重画
+      const v = visibleCols(state.dump.groupKey).vis.find((x) => x.i === col);
+      if (v) {
+        $scroller.scrollLeft = Math.max(0, v.x - $scroller.clientWidth / 3);
+        draw();
+        el = $rows.querySelector('.c.f.sel');
+      }
+    }
     if (el) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 
@@ -551,16 +599,20 @@
         state.init = msg;
         state.gen = msg.gen;
         state.cache.clear();
-        state.selected = null;
+        // 逐步打开的扫描完成：数据只是增加，保留选中的单元格与 dump
+        const keepSel = msg.keepSel && state.selected;
+        if (!keepSel) state.selected = null;
         hideRegex = C.compileHide(msg.hiddenPattern);
         const keys = msg.groups.map((g) => g.key).concat([ERR_VIEW, ORDER_VIEW]);
         const keep = state.view && keys.includes(state.view);
         if (!keep) {
           state.view = msg.groups.length ? msg.groups[0].key : msg.errorCount ? ERR_VIEW : ORDER_VIEW;
         }
-        clearCellbar();
-        state.dump = null;
-        renderDump();
+        if (!keepSel) {
+          clearCellbar();
+          state.dump = null;
+          renderDump();
+        }
         renderToolbar();
         resetView(keep);
         break;

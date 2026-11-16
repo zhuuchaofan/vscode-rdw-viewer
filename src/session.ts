@@ -37,6 +37,11 @@ export class RdwSession {
   private mismatch: MismatchMode;
   private numOpts: NumericOptions;
   private autoPacked: boolean;
+  /**
+   * 「整条正文」列宽的测量结果（分组键、位置、编码、COMP-3 自动识别 → 列宽）。
+   * 打开文件时同一个分组会因分组、布局、copybook 的设置被刷新好几次，抽样解码每次要几十毫秒。
+   */
+  private bodyWidths = new Map<string, number>();
 
   constructor(
     input: Uint8Array | ByteSource,
@@ -79,6 +84,11 @@ export class RdwSession {
       return undefined;
     }
     return new RdwSession(src, fileName, opts, index);
+  }
+
+  /** 界面上可以切换的设置（文字编码、长度不一致时的处理、COMP-3 自动识别）的当前值 */
+  currentOptions(): Pick<SessionOptions, 'encoding' | 'mismatch' | 'autoPacked'> {
+    return { encoding: this.encoding, mismatch: this.mismatch, autoPacked: this.autoPacked };
   }
 
   /** 关闭底层文件句柄（内存模式下无操作） */
@@ -239,6 +249,12 @@ export class RdwSession {
     }
     const idx = g.columns.indexOf(col);
     const n = g.entries.length;
+    const key = `${g.key}|${n}|${col.start}|${col.len}|${col.pic}|${this.encoding}|${this.autoPacked}`;
+    const known = this.bodyWidths.get(key);
+    if (known !== undefined) {
+      col.width = known;
+      return;
+    }
     const picks = new Set<number>();
     for (let i = 0; i < Math.min(n, 100); i++) {
       picks.add(i);
@@ -253,6 +269,7 @@ export class RdwSession {
       max = Math.max(max, displayWidth(text));
     }
     col.width = Math.min(Math.max(max + 2, displayWidth(col.pic) + 2, 6), 3000);
+    this.bodyWidths.set(key, col.width);
   }
 
   groupByKey(key: string): Group | undefined {

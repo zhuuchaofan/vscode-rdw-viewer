@@ -29,6 +29,8 @@ let dir = '';
 let fileA = '';
 let fileB = '';
 let damaged = '';
+let big = '';
+const BIG_COUNT = 400_000;
 let provider: Provider;
 let compare: (uri?: Stub.Uri, uris?: Stub.Uri[]) => Promise<void>;
 
@@ -52,6 +54,13 @@ before(() => {
   };
   damaged = path.join(dir, 'damaged.dat');
   fs.writeFileSync(damaged, Buffer.concat(Array.from({ length: 24 }, () => Buffer.concat([garbage(900 * 1024), records(2, 'C')]))));
+
+  // 记录很多的文件：扫描要花几百毫秒，足以在途中先交出开头部分
+  big = path.join(dir, 'big.dat');
+  const one = rec(ascii('0123456789'));
+  const bigBuf = Buffer.alloc(one.length * BIG_COUNT);
+  for (let i = 0; i < BIG_COUNT; i++) one.copy(bigBuf, i * one.length);
+  fs.writeFileSync(big, bigBuf);
 
   ext.activate(vscode.fakeContext(path.resolve(__dirname, '../..')));
   provider = vscode.state.providers.get(ext.EDITOR_VIEW_TYPE) as Provider;
@@ -126,6 +135,74 @@ test('自定义编辑器：通知上的「取消」→ 提示已取消，文件�
   await assert.rejects(provider.openCustomDocument(vscode.Uri.file(fileA), {}, NEVER));
   assert.equal(PagedFileSource.openCount, 0);
   assert.equal(vscode.state.infos.length, 1);
+});
+
+interface Loaded {
+  loaded: { ready: Promise<boolean>; scanning: boolean; session: { index: { count: number } } };
+  dispose(): void;
+}
+type Init = { type?: string; total?: number; scanning?: boolean; keepSel?: boolean };
+
+test('逐步打开：先显示开头部分，后台扫描完成后用完整数据刷新', async () => {
+  Object.assign(ext.thresholds, { scanProgress: 1024, partialAfterMs: 0, scanSliceMs: 0 });
+  const doc = (await provider.openCustomDocument(vscode.Uri.file(big), {}, NEVER)) as unknown as Loaded;
+  assert.equal(doc.loaded.scanning, true, '扫描还没有完成时就应返回文档');
+  const panel = new vscode.FakePanel();
+  await provider.resolveCustomEditor(doc, panel, NEVER);
+  await panel.receive({ type: 'ready' });
+  const first = panel.posted[0] as Init;
+  assert.equal(first.type, 'init');
+  assert.equal(first.scanning, true);
+  assert.ok(first.total! > 0 && first.total! < BIG_COUNT, `开头部分 ${first.total} 条`);
+
+  // 扫描期间的导出等需要整份文件的操作等到扫描完成
+  assert.equal(await doc.loaded.ready, true);
+  await new Promise((r) => setImmediate(r));
+  const last = panel.posted[panel.posted.length - 1] as Init;
+  assert.equal(last.type, 'init');
+  assert.equal(last.scanning, false);
+  assert.equal(last.keepSel, true);
+  assert.equal(last.total, BIG_COUNT);
+  assert.equal(doc.loaded.session.index.count, BIG_COUNT);
+  assert.equal(PagedFileSource.openCount, 1);
+
+  panel.dispose();
+  doc.dispose();
+  assert.equal(PagedFileSource.openCount, 0);
+});
+
+test('逐步打开：后台扫描途中关闭编辑器 → 扫描停止，文件描述符被关闭', async () => {
+  Object.assign(ext.thresholds, { scanProgress: 1024, partialAfterMs: 0, scanSliceMs: 0 });
+  const doc = (await provider.openCustomDocument(vscode.Uri.file(big), {}, NEVER)) as unknown as Loaded;
+  assert.equal(doc.loaded.scanning, true);
+  doc.dispose();
+  assert.equal(PagedFileSource.openCount, 0);
+  assert.equal(await doc.loaded.ready, false);
+  assert.deepEqual(vscode.state.errors, []);
+  assert.deepEqual(vscode.state.infos, []);
+});
+
+test('逐步打开：后台扫描途中在通知上取消 → 关闭编辑器，文件描述符被关闭', async () => {
+  Object.assign(ext.thresholds, { scanProgress: 1024, partialAfterMs: 0, scanSliceMs: 0 });
+  const doc = (await provider.openCustomDocument(vscode.Uri.file(big), {}, NEVER)) as unknown as Loaded;
+  const panel = new vscode.FakePanel();
+  await provider.resolveCustomEditor(doc, panel, NEVER);
+  vscode.state.progressToken.isCancellationRequested = true;
+  assert.equal(await doc.loaded.ready, false);
+  assert.equal(panel.disposed, true, '只有开头部分的编辑器应被关闭');
+  assert.equal(vscode.state.infos.length, 1);
+  doc.dispose();
+  assert.equal(PagedFileSource.openCount, 0);
+});
+
+test('不逐步打开（比较等）：扫描完成后才返回', async () => {
+  Object.assign(ext.thresholds, { scanProgress: 1024, partialAfterMs: 0, scanSliceMs: 0, compareProgress: Infinity });
+  await compare(undefined, [vscode.Uri.file(big), vscode.Uri.file(fileA)]);
+  const panel = vscode.state.panels[0];
+  await panel.receive({ type: 'ready' });
+  assert.equal(panel.posted[0]?.type, 'cinit');
+  panel.dispose();
+  assert.equal(PagedFileSource.openCount, 0);
 });
 
 test('比较：B 文件不存在 → 报错，已打开的 A 被关闭', async () => {

@@ -4,6 +4,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ByteSource, MemorySource, PagedFileSource } from '../source';
 import { RdwSession, Group } from '../session';
+import { RdwIndex, scanRdw, scanRdwAsync } from '../rdw';
+import { Copybook } from '../copybook';
 import { t, uiStrings } from '../i18n';
 import { EDITOR_VIEW_TYPE, thresholds, config } from './config';
 import { loadCopybook, scanCopybooks, pickCopybook } from './copybooks';
@@ -13,14 +15,31 @@ import { exportView, exportAll } from './exporting';
 import { pickDiscriminator } from './discriminator';
 import { openCompare } from './compareView';
 
-interface LoadedSession {
-  session: RdwSession;
+export interface LoadedSession {
+  /** 当前的会话。逐步打开时先是文件开头一部分的会话，扫描完成后换成完整的会话 */
+  readonly session: RdwSession;
   fileName: string;
   store: MappingStore;
-  /** 按保存的设置重新分组、加载 copybook */
+  /** 按保存的设置重新分组、加载 copybook（作用于当前会话；与扫描完成后的替换按顺序执行） */
   applyMapping: () => Promise<void>;
-  /** 释放底层资源（分页文件描述符等） */
+  /** true = 还在后台扫描文件的其余部分，当前会话只含开头的记录 */
+  readonly scanning: boolean;
+  /** 扫描结束（完整会话已就绪）时为 true，取消或失败时为 false */
+  readonly ready: Promise<boolean>;
+  /** 后台扫描完成、会话被替换为完整会话（true），或扫描被取消 / 失败（false）时通知 */
+  onDidFinishScan: (cb: (ok: boolean) => void) => vscode.Disposable;
+  /** 依次执行会改变会话状态的操作，避免与扫描完成后的替换交错 */
+  serial: <T>(fn: () => Promise<T> | T) => Promise<T>;
+  /** 释放底层资源（分页文件描述符等）；后台扫描随之停止 */
   dispose: () => void;
+}
+
+export interface LoadOptions {
+  /**
+   * 允许逐步打开：大文件扫描超过 thresholds.partialAfterMs 时，先用已扫描的开头部分建立会话并返回，
+   * 其余部分在后台继续扫描（自定义编辑器使用；比较等需要完整数据的场合不使用）。
+   */
+  progressive?: boolean;
 }
 
 /**
@@ -30,7 +49,8 @@ interface LoadedSession {
 export async function loadSession(
   ctx: vscode.ExtensionContext,
   uri: vscode.Uri,
-  externalToken?: vscode.CancellationToken
+  externalToken?: vscode.CancellationToken,
+  loadOpts: LoadOptions = {}
 ): Promise<LoadedSession | undefined> {
   const fileName = path.basename(uri.fsPath);
   let source: ByteSource;
@@ -60,38 +80,68 @@ export async function loadSession(
     autoPacked: cfg.autoPacked,
   };
 
-  let session: RdwSession | undefined;
+  /** 文档被释放（编辑器关闭）后，后台扫描停止 */
+  let disposed = false;
+  /** 扫描得到的第一份结果：完整索引，或逐步打开时开头部分的快照 */
+  let fullScan: Promise<RdwIndex | undefined> | undefined;
+  let first: { index: RdwIndex; partial: boolean } | undefined;
+  let resumeScan = () => {};
   try {
     if (source.size >= thresholds.scanProgress) {
-      session = await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: t('ext.openProgress', { name: fileName }),
-          cancellable: true,
-        },
-        (progress, token) => {
-          let shown = 0;
-          return RdwSession.createAsync(source, fileName, sessionOpts, {
-            isCancelled: () => token.isCancellationRequested || !!externalToken?.isCancellationRequested,
-            onProgress: (f) => {
-              const pct = Math.floor(f * 100);
-              if (pct > shown) {
-                progress.report({ increment: pct - shown });
-                shown = pct;
-              }
-            },
-          });
-        }
-      );
-      if (!session) {
+      let onSnapshot: ((idx: RdwIndex) => Promise<void>) | undefined;
+      const snapshot = new Promise<RdwIndex>((resolve) => {
+        // 交出开头部分后，扫描暂停到界面用它建立好会话（resumeScan）为止
+        onSnapshot = (idx) => {
+          resolve(idx);
+          return new Promise<void>((r) => (resumeScan = r));
+        };
+      });
+      fullScan = new Promise<RdwIndex | undefined>((resolve, reject) => {
+        vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: t('ext.openProgress', { name: fileName }),
+            cancellable: true,
+          },
+          async (progress, token) => {
+            let shown = 0;
+            try {
+              resolve(
+                await scanRdwAsync(source, {
+                  isCancelled: () =>
+                    disposed ||
+                    token.isCancellationRequested ||
+                    // 编辑器的打开请求被取消只在返回文档之前有效
+                    (!first && !!externalToken?.isCancellationRequested),
+                  onProgress: (f) => {
+                    const pct = Math.floor(f * 100);
+                    if (pct > shown) {
+                      progress.report({ increment: pct - shown });
+                      shown = pct;
+                    }
+                  },
+                  onSnapshot: loadOpts.progressive ? onSnapshot : undefined,
+                  snapshotAfterMs: thresholds.partialAfterMs,
+                  sliceMs: thresholds.scanSliceMs,
+                })
+              );
+            } catch (e) {
+              reject(e);
+            }
+          }
+        );
+      });
+      const r = await Promise.race([fullScan, snapshot.then((idx) => ({ snap: idx }))]);
+      if (r === undefined) {
         source.close();
         if (!externalToken?.isCancellationRequested) {
           vscode.window.showInformationMessage(t('ext.openCancelled'));
         }
         return undefined;
       }
+      first = 'snap' in r ? { index: r.snap, partial: true } : { index: r, partial: false };
     } else {
-      session = new RdwSession(source, fileName, sessionOpts);
+      first = { index: scanRdw(source), partial: false };
     }
   } catch (e) {
     source.close();
@@ -99,30 +149,51 @@ export async function loadSession(
     return undefined;
   }
 
-  const activeSession = session;
+  let current = new RdwSession(source, fileName, sessionOpts, first.index);
   const folder = vscode.workspace.getWorkspaceFolder(uri) ?? vscode.workspace.workspaceFolders?.[0];
   const store = new MappingStore(ctx, folder);
 
-  const loadInto = async (g: Group, stored: string | undefined, auto = false) => {
-    if (!stored) {
-      activeSession.setCopybook(g.length, null, undefined, g.value);
-      return;
-    }
-    const cpyUri = auto ? vscode.Uri.parse(stored) : store.resolve(stored);
-    try {
-      activeSession.setCopybook(
-        g.length,
-        { name: path.basename(cpyUri.fsPath), copybook: await loadCopybook(cpyUri) },
-        undefined,
-        g.value,
-        auto
-      );
-    } catch (e) {
-      activeSession.setCopybook(g.length, null, t('ext.cpyReadFailed', { path: stored, error: (e as Error).message }), g.value);
-    }
+  // 会改变会话状态的操作按顺序执行（扫描完成后替换会话也排在其中）
+  let queue: Promise<unknown> = Promise.resolve();
+  const serial = <T>(fn: () => Promise<T> | T): Promise<T> => {
+    const run = queue.then(fn);
+    queue = run.catch(() => undefined);
+    return run;
   };
 
-  const applyMapping = async () => {
+  /** 最近一次应用设置时读取的 copybook（扫描完成后替换会话时重复使用，不再读取文件） */
+  let copybookCache = new Map<string, Promise<Copybook>>();
+  const applyTo = async (activeSession: RdwSession, reuse: boolean) => {
+    const prev = copybookCache;
+    const cache = new Map<string, Promise<Copybook>>();
+    const load = (cpyUri: vscode.Uri) => {
+      const key = cpyUri.toString();
+      let hit = cache.get(key) ?? (reuse ? prev.get(key) : undefined);
+      if (!hit) {
+        hit = loadCopybook(cpyUri);
+      }
+      cache.set(key, hit);
+      return hit;
+    };
+    const loadInto = async (g: Group, stored: string | undefined, auto = false) => {
+      if (!stored) {
+        activeSession.setCopybook(g.length, null, undefined, g.value);
+        return;
+      }
+      const cpyUri = auto ? vscode.Uri.parse(stored) : store.resolve(stored);
+      try {
+        activeSession.setCopybook(
+          g.length,
+          { name: path.basename(cpyUri.fsPath), copybook: await load(cpyUri) },
+          undefined,
+          g.value,
+          auto
+        );
+      } catch (e) {
+        activeSession.setCopybook(g.length, null, t('ext.cpyReadFailed', { path: stored, error: (e as Error).message }), g.value);
+      }
+    };
+
     const mapCfg = await store.read();
     // 先确定分组（判别字段），再为每个分组加载 copybook
     const lengths = new Set(activeSession.groups.map((g) => g.length));
@@ -146,21 +217,78 @@ export async function loadSession(
       }
       await loadInto(g, stored);
     }
+    copybookCache = cache;
   };
+
+  const applyMapping = () => serial(() => applyTo(current, false));
   try {
     await applyMapping();
   } catch (e) {
     // 读取保存的设置失败等：会话不会交给调用方，这里负责释放文件
-    activeSession.close();
+    disposed = true;
+    current.close();
     vscode.window.showErrorMessage(t('ext.readFailed', { error: (e as Error).message }));
     return undefined;
+  } finally {
+    resumeScan();
   }
+
+  let scanning = first.partial;
+  const listeners = new Set<(ok: boolean) => void>();
+  const finish = (ok: boolean) => {
+    scanning = false;
+    for (const cb of [...listeners]) cb(ok);
+    listeners.clear();
+    return ok;
+  };
+  const ready: Promise<boolean> = !first.partial
+    ? Promise.resolve(true)
+    : fullScan!.then(
+        (index) =>
+          serial(async () => {
+            if (disposed) return finish(false);
+            if (!index) {
+              source.close();
+              vscode.window.showInformationMessage(t('ext.openCancelled'));
+              return finish(false);
+            }
+            // 沿用界面上已切换的设置（文字编码等），保存的 copybook / 判别字段设置重新应用
+            const full = new RdwSession(source, fileName, { ...sessionOpts, ...current.currentOptions() }, index);
+            await applyTo(full, true);
+            if (disposed) return finish(false);
+            current = full;
+            return finish(true);
+          }),
+        (e) =>
+          serial(() => {
+            if (!disposed) {
+              source.close();
+              vscode.window.showErrorMessage(t('ext.readFailed', { error: (e as Error).message }));
+            }
+            return finish(false);
+          })
+      );
+
   return {
-    session: activeSession,
+    get session() {
+      return current;
+    },
     fileName,
     store,
     applyMapping,
-    dispose: () => activeSession.close(),
+    get scanning() {
+      return scanning;
+    },
+    ready,
+    onDidFinishScan: (cb) => {
+      if (scanning) listeners.add(cb);
+      return { dispose: () => listeners.delete(cb) };
+    },
+    serial,
+    dispose: () => {
+      disposed = true;
+      current.close();
+    },
   };
 }
 
@@ -202,15 +330,18 @@ function attachViewerPanel(
   uri: vscode.Uri,
   loaded: LoadedSession
 ): vscode.Disposable {
-  const { session, store, applyMapping } = loaded;
+  const { store, applyMapping, serial } = loaded;
   const web = panel.webview;
   setupWebview(ctx, web, 'main.js');
 
   let gen = 0;
-  const sendInit = () => {
+  /** keepSel：数据只是增加（逐步打开的扫描完成），网页保留当前选中的单元格 */
+  const sendInit = (keepSel = false) => {
     gen++;
     web.postMessage({
-      ...session.init(),
+      ...loaded.session.init(),
+      scanning: loaded.scanning,
+      keepSel,
       gen,
       hiddenPattern: config().hiddenPattern,
       version: String(ctx.extension.packageJSON.version ?? ''),
@@ -218,7 +349,14 @@ function attachViewerPanel(
     });
   };
 
-  return web.onDidReceiveMessage(async (msg) => {
+  // 逐步打开：后台扫描完成后用完整数据刷新；扫描被取消或失败则关闭编辑器
+  const finished = loaded.onDidFinishScan((ok) => {
+    if (ok) sendInit(true);
+    else panel.dispose();
+  });
+
+  const sub = web.onDidReceiveMessage(async (msg) => {
+    const session = loaded.session;
     switch (msg.type) {
       case 'ready':
         sendInit();
@@ -268,9 +406,11 @@ function attachViewerPanel(
         break;
       }
       case 'configureDisc': {
-        const g = session.groupByKey(msg.g);
+        // 判别字段的取值统计需要整份文件
+        if (!(await loaded.ready)) break;
+        const g = loaded.session.groupByKey(msg.g);
         if (!g) break;
-        const d = await pickDiscriminator(session, g);
+        const d = await pickDiscriminator(loaded.session, g);
         if (d) {
           await store.setDiscriminator(g.length, d);
           await applyMapping();
@@ -284,8 +424,10 @@ function attachViewerPanel(
         // 选回默认（第一个）时不必保存
         const choice = g.choices.find((c) => c.id === msg.id);
         const option = choice && choice.options[0] === msg.option ? undefined : String(msg.option);
-        await store.setLayout(g.length, g.value, msg.id, option);
-        session.setLayout(g.length, msg.id, option, g.value);
+        await serial(async () => {
+          await store.setLayout(g.length, g.value, msg.id, option);
+          loaded.session.setLayout(g.length, msg.id, option, g.value);
+        });
         sendInit();
         break;
       }
@@ -305,22 +447,24 @@ function attachViewerPanel(
         break;
       }
       case 'exportView':
-        await exportView(ctx, session, uri, msg.view);
+        // 导出需要整份文件：逐步打开时等扫描完成
+        if (await loaded.ready) await exportView(ctx, loaded.session, uri, msg.view);
         break;
       case 'exportAll':
-        await exportAll(ctx, session, uri);
+        if (await loaded.ready) await exportAll(ctx, loaded.session, uri);
         break;
       case 'setAutoPacked':
-        session.setAutoPacked(!!msg.on);
+        await serial(() => loaded.session.setAutoPacked(!!msg.on));
         sendInit();
         break;
       case 'setEncoding':
-        if (session.setEncoding(msg.encoding)) {
+        if (await serial(() => loaded.session.setEncoding(msg.encoding))) {
           sendInit();
         }
         break;
     }
   });
+  return { dispose: () => (finished.dispose(), sub.dispose()) };
 }
 
 class RdwCustomDocument implements vscode.CustomDocument {
@@ -345,7 +489,7 @@ export class RdwEditorProvider implements vscode.CustomReadonlyEditorProvider<Rd
     _openContext: vscode.CustomDocumentOpenContext,
     token: vscode.CancellationToken
   ): Promise<RdwCustomDocument> {
-    const loaded = await loadSession(this.ctx, uri, token);
+    const loaded = await loadSession(this.ctx, uri, token, { progressive: true });
     if (!loaded) {
       throw vscode.CancellationError ? new vscode.CancellationError() : new Error('Cancelled');
     }
