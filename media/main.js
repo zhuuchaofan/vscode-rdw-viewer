@@ -596,8 +596,13 @@
         // 扩展端还在读取文件：先显示「读取中」与进度，代替一片空白
         if (state.init) return;
         C.setStrings(msg.strings);
-        const pct = typeof msg.fraction === 'number' ? ` ${Math.floor(msg.fraction * 100)}%` : '';
-        $rows.innerHTML = `<div id="empty" class="loading">${esc(S('loading'))}${pct}</div>`;
+        const has = typeof msg.fraction === 'number';
+        const pct = has ? Math.floor(msg.fraction * 100) : 0;
+        $rows.innerHTML =
+          `<div id="loading"><div class="msg">${esc(S('loading'))}${has ? ` ${pct}%` : ''}</div>` +
+          `<div class="bar${has ? '' : ' indeterminate'}"><div class="fill" data-w="${has ? pct : 30}"></div></div></div>`;
+        const fill = $rows.querySelector('#loading .fill');
+        if (fill) fill.style.width = fill.dataset.w + '%';
         break;
       }
       case 'init': {

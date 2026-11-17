@@ -497,3 +497,10 @@ button:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-off
   color: var(--vscode-descriptionForeground, var(--vscode-foreground));
 }
 .hdrrow.k0 .hd { font-weight: 600; }
+
+/* 读取中（扩展端还在读取文件） */
+#loading { padding: 48px 24px; display: flex; flex-direction: column; align-items: center; gap: 12px; font-size: 1.15em; }
+#loading .bar { width: min(360px, 80%); height: 4px; background: var(--vscode-progressBar-background, #0e70c0); background: color-mix(in srgb, var(--vscode-progressBar-background, #0e70c0) 20%, transparent); border-radius: 2px; overflow: hidden; }
+#loading .fill { height: 100%; background: var(--vscode-progressBar-background, #0e70c0); transition: width 0.2s; }
+#loading .bar.indeterminate .fill { animation: rdw-indet 1.2s ease-in-out infinite; }
+@keyframes rdw-indet { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
