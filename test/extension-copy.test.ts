@@ -34,6 +34,7 @@ test('自动选中的 copybook 中的 COPY 被展开，REPLACING 生效，提示
     resolveCustomEditor(d: unknown, p: unknown, t: unknown): Promise<void>;
   };
   const doc = await provider.openCustomDocument(vscode.Uri.file(path.join(root, 'data.dat')), {}, { isCancellationRequested: false });
+  await (doc as unknown as { loading: Promise<unknown> }).loading;
   const panel = new vscode.FakePanel();
   await provider.resolveCustomEditor(doc, panel, {});
   await panel.receive({ type: 'ready' });
@@ -65,6 +66,7 @@ test('工作区 copybook 一览被缓存：再次打开不再重新查找 COPY �
   const open = async () => {
     memberLookups = 0;
     const doc = await provider.openCustomDocument(vscode.Uri.file(path.join(root, 'data.dat')), {}, { isCancellationRequested: false });
+  await (doc as unknown as { loading: Promise<unknown> }).loading;
     const panel = new vscode.FakePanel();
     await provider.resolveCustomEditor(doc, panel, {});
     await panel.receive({ type: 'ready' });
@@ -93,4 +95,36 @@ test('工作区 copybook 一览被缓存：再次打开不再重新查找 COPY �
   } finally {
     vscode.workspace.findFiles = origFind;
   }
+});
+
+test('「选择 copybook」：选择框不等扫描完成就打开，列表扫描完成后填入', async () => {
+  vscode.state.reset();
+  vscode.state.workspaceRoot = root;
+  const provider = vscode.state.providers.get(ext.EDITOR_VIEW_TYPE) as {
+    openCustomDocument(u: unknown, c: unknown, t: unknown): Promise<{ dispose(): void; loading: Promise<unknown> }>;
+    resolveCustomEditor(d: unknown, p: unknown, t: unknown): Promise<void>;
+  };
+  const doc = await provider.openCustomDocument(vscode.Uri.file(path.join(root, 'data.dat')), {}, { isCancellationRequested: false });
+  await doc.loading;
+  const panel = new vscode.FakePanel();
+  await provider.resolveCustomEditor(doc, panel, {});
+  await panel.receive({ type: 'ready' });
+  const init = panel.posted.find((m) => m.type === 'init') as unknown as { groups: Array<{ key: string }> };
+
+  const origPick = vscode.window.showQuickPick;
+  let itemsWasPending = false;
+  let labels: string[] = [];
+  (vscode.window as { showQuickPick: unknown }).showQuickPick = async (items: unknown) => {
+    itemsWasPending = items instanceof Promise;
+    labels = ((await items) as Array<{ label: string }>).map((x) => x.label);
+    return undefined;
+  };
+  try {
+    await panel.receive({ type: 'chooseCopybook', g: init.groups[0].key });
+  } finally {
+    (vscode.window as { showQuickPick: unknown }).showQuickPick = origPick;
+  }
+  assert.ok(itemsWasPending, '应把尚未完成的列表交给 showQuickPick');
+  assert.ok(labels.some((l) => l.includes('MAIN.cpy')));
+  doc.dispose();
 });

@@ -8,7 +8,7 @@ import { RdwIndex, scanRdw, scanRdwAsync } from '../rdw';
 import { Copybook } from '../copybook';
 import { t, uiStrings } from '../i18n';
 import { EDITOR_VIEW_TYPE, thresholds, config } from './config';
-import { loadCopybook, scanCopybooks, pickCopybook } from './copybooks';
+import { loadCopybook, scanCopybooks, pickCopybook, warmCopybookScan } from './copybooks';
 import { layoutKey, MappingStore } from './mapping';
 import { describeLayout } from './layoutReport';
 import { exportView, exportAll } from './exporting';
@@ -40,6 +40,8 @@ export interface LoadOptions {
    * 其余部分在后台继续扫描（自定义编辑器使用；比较等需要完整数据的场合不使用）。
    */
   progressive?: boolean;
+  /** 扫描进度（0~1），仅异步扫描的大文件 */
+  onProgress?: (fraction: number) => void;
 }
 
 /**
@@ -114,6 +116,7 @@ export async function loadSession(
                     // 编辑器的打开请求被取消只在返回文档之前有效
                     (!first && !!externalToken?.isCancellationRequested),
                   onProgress: (f) => {
+                    loadOpts.onProgress?.(f);
                     const pct = Math.floor(f * 100);
                     if (pct > shown) {
                       progress.report({ increment: pct - shown });
@@ -324,15 +327,14 @@ export function createPanel(ctx: vscode.ExtensionContext, title: string, script:
 }
 
 /** 绑定单文件查看器面板的消息处理（供 Custom Editor 与命令打开共用） */
-function attachViewerPanel(
+function viewerHandler(
   ctx: vscode.ExtensionContext,
   panel: vscode.WebviewPanel,
   uri: vscode.Uri,
   loaded: LoadedSession
-): vscode.Disposable {
+): { handle: (msg: any) => Promise<void>; dispose: () => void } {
   const { store, applyMapping, serial } = loaded;
   const web = panel.webview;
-  setupWebview(ctx, web, 'main.js');
 
   let gen = 0;
   /** keepSel：数据只是增加（逐步打开的扫描完成），网页保留当前选中的单元格 */
@@ -355,7 +357,7 @@ function attachViewerPanel(
     else panel.dispose();
   });
 
-  const sub = web.onDidReceiveMessage(async (msg) => {
+  const handle = async (msg: any) => {
     const session = loaded.session;
     switch (msg.type) {
       case 'ready':
@@ -463,18 +465,116 @@ function attachViewerPanel(
         }
         break;
     }
-  });
-  return { dispose: () => (finished.dispose(), sub.dispose()) };
+  };
+  return { handle, dispose: () => finished.dispose() };
 }
 
+/**
+ * 立即建立网页（显示「读取中」与进度），文件读取完成后再交给 viewerHandler。
+ * 这样打开文件时编辑器不会在读取、扫描、加载 copybook 的期间一片空白。
+ * 网页在读取完成前发来的消息（ready 等）先保留，完成后按顺序处理。
+ */
+function attachViewerPanel(ctx: vscode.ExtensionContext, panel: vscode.WebviewPanel, doc: RdwCustomDocument): vscode.Disposable {
+  const web = panel.webview;
+  setupWebview(ctx, web, 'main.js');
+  let disposed = false;
+  let inner: ReturnType<typeof viewerHandler> | undefined;
+  const pending: unknown[] = [];
+  let webReady = false;
+  const postLoading = () => {
+    if (webReady && !inner) {
+      web.postMessage({ type: 'loading', fraction: doc.progress, strings: uiStrings() });
+    }
+  };
+  const progressSub = doc.onProgress(postLoading);
+
+  doc.loading.then(async (loaded) => {
+    if (disposed) return;
+    if (!loaded) {
+      // 读取失败或被取消（原因已经提示过）：关闭这个编辑器
+      panel.dispose();
+      return;
+    }
+    inner = viewerHandler(ctx, panel, doc.uri, loaded);
+    while (pending.length > 0 && !disposed) {
+      await inner.handle(pending.shift());
+    }
+  });
+
+  const sub = web.onDidReceiveMessage(async (msg) => {
+    if (inner && pending.length === 0) {
+      await inner.handle(msg);
+      return;
+    }
+    if (msg?.type === 'ready') {
+      webReady = true;
+      postLoading();
+    }
+    pending.push(msg);
+  });
+  return {
+    dispose: () => {
+      disposed = true;
+      progressSub.dispose();
+      sub.dispose();
+      inner?.dispose();
+    },
+  };
+}
+
+/**
+ * 自定义编辑器的文档：创建时只开始读取文件、不等待完成，好让 VS Code 立即建立编辑器（网页先显示「读取中」）。
+ * loading 完成后得到会话；读取失败或被取消时为 undefined。
+ */
 class RdwCustomDocument implements vscode.CustomDocument {
+  readonly loading: Promise<LoadedSession | undefined>;
+  /** 读取完成后的会话 */
+  loaded: LoadedSession | undefined;
+  /** 最近一次报告的扫描进度（0~1；没有进度的小文件为 undefined） */
+  progress: number | undefined;
+  private disposed = false;
+  private readonly cancel = { isCancellationRequested: false } as vscode.CancellationToken;
+  private progressListeners = new Set<() => void>();
+
   constructor(
-    readonly uri: vscode.Uri,
-    readonly loaded: LoadedSession
-  ) {}
+    ctx: vscode.ExtensionContext,
+    readonly uri: vscode.Uri
+  ) {
+    this.loading = loadSession(ctx, uri, this.cancel, {
+      progressive: true,
+      onProgress: (f) => {
+        this.progress = f;
+        this.progressListeners.forEach((cb) => cb());
+      },
+    }).then(
+      (loaded) => {
+        this.progressListeners.clear();
+        if (loaded && this.disposed) {
+          // 读取途中编辑器已经关闭
+          loaded.dispose();
+          return undefined;
+        }
+        this.loaded = loaded;
+        // 在后台预先扫描工作区的 copybook，之后点击「选择 copybook」时选择框可以立即列出
+        if (loaded) warmCopybookScan();
+        return loaded;
+      },
+      (e) => {
+        vscode.window.showErrorMessage(t('ext.readFailed', { error: (e as Error).message }));
+        return undefined;
+      }
+    );
+  }
+
+  onProgress(cb: () => void): vscode.Disposable {
+    this.progressListeners.add(cb);
+    return { dispose: () => this.progressListeners.delete(cb) };
+  }
 
   dispose(): void {
-    this.loaded.dispose();
+    this.disposed = true;
+    (this.cancel as { isCancellationRequested: boolean }).isCancellationRequested = true;
+    this.loaded?.dispose();
   }
 }
 
@@ -487,13 +587,10 @@ export class RdwEditorProvider implements vscode.CustomReadonlyEditorProvider<Rd
   async openCustomDocument(
     uri: vscode.Uri,
     _openContext: vscode.CustomDocumentOpenContext,
-    token: vscode.CancellationToken
+    _token: vscode.CancellationToken
   ): Promise<RdwCustomDocument> {
-    const loaded = await loadSession(this.ctx, uri, token, { progressive: true });
-    if (!loaded) {
-      throw vscode.CancellationError ? new vscode.CancellationError() : new Error('Cancelled');
-    }
-    return new RdwCustomDocument(uri, loaded);
+    // 不等读取完成：编辑器先显示出来（「读取中」），读取在文档内部进行
+    return new RdwCustomDocument(this.ctx, uri);
   }
 
   async resolveCustomEditor(
@@ -501,7 +598,7 @@ export class RdwEditorProvider implements vscode.CustomReadonlyEditorProvider<Rd
     webviewPanel: vscode.WebviewPanel,
     _token: vscode.CancellationToken
   ): Promise<void> {
-    const sub = attachViewerPanel(this.ctx, webviewPanel, document.uri, document.loaded);
+    const sub = attachViewerPanel(this.ctx, webviewPanel, document);
     webviewPanel.onDidDispose(() => sub.dispose());
   }
 }
