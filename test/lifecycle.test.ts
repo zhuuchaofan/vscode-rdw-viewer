@@ -18,8 +18,14 @@ import { loadExtension } from './support/load-extension';
 
 const { vscode, ext } = loadExtension();
 
+interface Doc {
+  /** 读取完成后的会话（读取失败或被取消时为 undefined） */
+  loading: Promise<unknown>;
+  loaded?: { ready: Promise<boolean>; scanning: boolean; session: { index: { count: number } } };
+  dispose(): void;
+}
 interface Provider {
-  openCustomDocument(uri: Stub.Uri, ctx: unknown, token: { isCancellationRequested: boolean }): Promise<{ dispose(): void }>;
+  openCustomDocument(uri: Stub.Uri, ctx: unknown, token: { isCancellationRequested: boolean }): Promise<Doc>;
   resolveCustomEditor(doc: unknown, panel: Stub.FakePanel, token: unknown): Promise<void>;
 }
 
@@ -81,6 +87,7 @@ beforeEach(() => {
 
 test('自定义编辑器：打开 → 显示 → 关闭面板 → 释放文档，文件描述符被关闭', async () => {
   const doc = await provider.openCustomDocument(vscode.Uri.file(fileA), {}, NEVER);
+  assert.ok(await doc.loading);
   assert.equal(PagedFileSource.openCount, 1);
 
   const panel = new vscode.FakePanel();
@@ -97,55 +104,83 @@ test('自定义编辑器：打开 → 显示 → 关闭面板 → 释放文档�
   assert.equal(PagedFileSource.openCount, 0);
 });
 
-test('自定义编辑器：打开前已取消 → 不留下文件描述符', async () => {
+test('自定义编辑器：不等读取完成就建立编辑器，网页先显示「读取中」，读完后显示数据', async () => {
   ext.thresholds.scanProgress = 1024;
-  await assert.rejects(provider.openCustomDocument(vscode.Uri.file(fileA), {}, { isCancellationRequested: true }));
+  const doc = await provider.openCustomDocument(vscode.Uri.file(damaged), {}, NEVER);
+  assert.equal(doc.loaded, undefined, '文档应在读取完成前就返回');
+  const panel = new vscode.FakePanel();
+  await provider.resolveCustomEditor(doc, panel, NEVER);
+  await panel.receive({ type: 'ready' });
+  assert.equal(panel.posted[0]?.type, 'loading');
+  assert.ok(await doc.loading);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(panel.posted[panel.posted.length - 1]?.type, 'init', '读取完成后处理先前收到的 ready');
+  panel.dispose();
+  doc.dispose();
   assert.equal(PagedFileSource.openCount, 0);
-  assert.deepEqual(vscode.state.infos, [], '由 VS Code 取消（关闭编辑器）时不提示');
 });
 
-test('自定义编辑器：扫描损坏的大文件途中取消 → 很快结束，文件描述符被关闭', async () => {
+test('自定义编辑器：读取完成前关闭编辑器 → 不留下文件描述符，不提示', async () => {
+  const doc = await provider.openCustomDocument(vscode.Uri.file(fileA), {}, NEVER);
+  doc.dispose();
+  assert.equal(await doc.loading, undefined);
+  assert.equal(PagedFileSource.openCount, 0);
+  assert.deepEqual(vscode.state.infos, []);
+});
+
+test('自定义编辑器：扫描损坏的大文件途中关闭编辑器 → 很快结束，文件描述符被关闭', async () => {
   ext.thresholds.scanProgress = 1024;
-  const token = { isCancellationRequested: false };
   const started = performance.now();
-  // 扫描开始之后、第一次报告进度时取消（相当于用户在打开途中关闭了标签页）
+  // 扫描开始之后、第一次报告进度时关闭（相当于用户在打开途中关闭了标签页）
   let reports = 0;
+  let doc: Doc | undefined;
   vscode.state.onProgressReport = () => {
     reports++;
-    token.isCancellationRequested = true;
+    doc?.dispose();
   };
-  await assert.rejects(provider.openCustomDocument(vscode.Uri.file(damaged), {}, token));
+  doc = await provider.openCustomDocument(vscode.Uri.file(damaged), {}, NEVER);
+  assert.equal(await doc.loading, undefined);
   const cancelledAfter = performance.now() - started;
   assert.equal(reports, 1, '取消后不应继续扫描');
   assert.equal(PagedFileSource.openCount, 0);
+  assert.deepEqual(vscode.state.infos, [], '由 VS Code 关闭编辑器时不提示');
   vscode.state.onProgressReport = undefined;
 
   // 对照：不取消时完整扫描所需的时间；取消应明显更早结束
   const t0 = performance.now();
-  const doc = await provider.openCustomDocument(vscode.Uri.file(damaged), {}, NEVER);
-  const full = performance.now() - t0;
-  doc.dispose();
+  const full = await provider.openCustomDocument(vscode.Uri.file(damaged), {}, NEVER);
+  assert.ok(await full.loading);
+  const fullMs = performance.now() - t0;
+  full.dispose();
   assert.equal(PagedFileSource.openCount, 0);
-  assert.ok(cancelledAfter < full / 2, `取消用了 ${cancelledAfter.toFixed(0)}ms，完整扫描 ${full.toFixed(0)}ms`);
+  assert.ok(cancelledAfter < fullMs / 2, `取消用了 ${cancelledAfter.toFixed(0)}ms，完整扫描 ${fullMs.toFixed(0)}ms`);
 });
 
-test('自定义编辑器：通知上的「取消」→ 提示已取消，文件描述符被关闭', async () => {
+test('自定义编辑器：通知上的「取消」→ 提示已取消，关闭编辑器，文件描述符被关闭', async () => {
   ext.thresholds.scanProgress = 1024;
   vscode.state.progressToken.isCancellationRequested = true;
-  await assert.rejects(provider.openCustomDocument(vscode.Uri.file(fileA), {}, NEVER));
+  const doc = await provider.openCustomDocument(vscode.Uri.file(fileA), {}, NEVER);
+  const panel = new vscode.FakePanel();
+  await provider.resolveCustomEditor(doc, panel, NEVER);
+  assert.equal(await doc.loading, undefined);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(panel.disposed, true);
   assert.equal(PagedFileSource.openCount, 0);
   assert.equal(vscode.state.infos.length, 1);
+  doc.dispose();
 });
 
-interface Loaded {
-  loaded: { ready: Promise<boolean>; scanning: boolean; session: { index: { count: number } } };
-  dispose(): void;
-}
+type Loaded = Doc & { loaded: NonNullable<Doc['loaded']> };
+const openLoaded = async (file: string): Promise<Loaded> => {
+  const doc = await provider.openCustomDocument(vscode.Uri.file(file), {}, NEVER);
+  assert.ok(await doc.loading);
+  return doc as Loaded;
+};
 type Init = { type?: string; total?: number; scanning?: boolean; keepSel?: boolean };
 
 test('逐步打开：先显示开头部分，后台扫描完成后用完整数据刷新', async () => {
   Object.assign(ext.thresholds, { scanProgress: 1024, partialAfterMs: 0, scanSliceMs: 0 });
-  const doc = (await provider.openCustomDocument(vscode.Uri.file(big), {}, NEVER)) as unknown as Loaded;
+  const doc = await openLoaded(big);
   assert.equal(doc.loaded.scanning, true, '扫描还没有完成时就应返回文档');
   const panel = new vscode.FakePanel();
   await provider.resolveCustomEditor(doc, panel, NEVER);
@@ -173,7 +208,7 @@ test('逐步打开：先显示开头部分，后台扫描完成后用完整数�
 
 test('逐步打开：后台扫描途中关闭编辑器 → 扫描停止，文件描述符被关闭', async () => {
   Object.assign(ext.thresholds, { scanProgress: 1024, partialAfterMs: 0, scanSliceMs: 0 });
-  const doc = (await provider.openCustomDocument(vscode.Uri.file(big), {}, NEVER)) as unknown as Loaded;
+  const doc = await openLoaded(big);
   assert.equal(doc.loaded.scanning, true);
   doc.dispose();
   assert.equal(PagedFileSource.openCount, 0);
@@ -184,7 +219,7 @@ test('逐步打开：后台扫描途中关闭编辑器 → 扫描停止，文件
 
 test('逐步打开：后台扫描途中在通知上取消 → 关闭编辑器，文件描述符被关闭', async () => {
   Object.assign(ext.thresholds, { scanProgress: 1024, partialAfterMs: 0, scanSliceMs: 0 });
-  const doc = (await provider.openCustomDocument(vscode.Uri.file(big), {}, NEVER)) as unknown as Loaded;
+  const doc = await openLoaded(big);
   const panel = new vscode.FakePanel();
   await provider.resolveCustomEditor(doc, panel, NEVER);
   vscode.state.progressToken.isCancellationRequested = true;

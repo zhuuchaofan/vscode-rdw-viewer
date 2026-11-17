@@ -592,6 +592,14 @@
   window.addEventListener('message', (ev) => {
     const msg = ev.data;
     switch (msg.type) {
+      case 'loading': {
+        // 扩展端还在读取文件：先显示「读取中」与进度，代替一片空白
+        if (state.init) return;
+        C.setStrings(msg.strings);
+        const pct = typeof msg.fraction === 'number' ? ` ${Math.floor(msg.fraction * 100)}%` : '';
+        $rows.innerHTML = `<div id="empty" class="loading">${esc(S('loading'))}${pct}</div>`;
+        break;
+      }
       case 'init': {
         C.refreshMetrics($scroller);
         C.setStrings(msg.strings);

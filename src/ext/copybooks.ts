@@ -127,26 +127,67 @@ const scanCache = new Map<string, ScanEntry>();
 let createWatcher: vscode.Disposable | undefined;
 
 /** 工作区中的 copybook 及其总长度（无法解析的为 -1） */
-export async function scanCopybooks(): Promise<Array<{ uri: vscode.Uri; total: number }>> {
-  if (!createWatcher && vscode.workspace.createFileSystemWatcher) {
-    // 新建的文件可能就是之前找不到的 COPY 原文，也可能改变同名原文的选择
-    const w = vscode.workspace.createFileSystemWatcher('**/*', false, true, true);
-    w.onDidCreate(() => {
-      for (const [k, e] of scanCache) if (e.unresolved || e.deps.length > 0) scanCache.delete(k);
-    });
-    createWatcher = w;
+/** 工作区 copybook 文件一览（findFiles 要搜索整个工作区，较慢）；有 copybook 新建或删除时作废 */
+let fileList: Thenable<vscode.Uri[]> | undefined;
+/** 正在进行的扫描：同时多次请求（如打开文件时的预热与点击「选择 copybook」）共用一次 */
+let inflight: Promise<Array<{ uri: vscode.Uri; total: number }>> | undefined;
+
+function ensureWatchers(): void {
+  if (createWatcher || !vscode.workspace.createFileSystemWatcher) return;
+  // 新建的文件可能就是之前找不到的 COPY 原文，也可能改变同名原文的选择
+  const any = vscode.workspace.createFileSystemWatcher('**/*', false, true, true);
+  any.onDidCreate(() => {
+    for (const [k, e] of scanCache) if (e.unresolved || e.deps.length > 0) scanCache.delete(k);
+  });
+  const cpy = vscode.workspace.createFileSystemWatcher(COPYBOOK_GLOB, false, true, false);
+  cpy.onDidCreate(() => (fileList = undefined));
+  cpy.onDidDelete(() => (fileList = undefined));
+  createWatcher = vscode.Disposable.from(any, cpy);
+}
+
+/**
+ * 工作区中的 copybook 及其总长度（无法解析的为 -1）。
+ * 同时进行中的请求共用一次扫描；文件一览与各文件的解析结果都有缓存。
+ */
+export function scanCopybooks(): Promise<Array<{ uri: vscode.Uri; total: number }>> {
+  inflight ??= doScan().finally(() => (inflight = undefined));
+  return inflight;
+}
+
+/** 在后台预先扫描（打开文件后调用），之后点击「选择 copybook」时不必等待 */
+export function warmCopybookScan(): void {
+  scanCopybooks().catch(() => undefined);
+}
+
+async function doScan(): Promise<Array<{ uri: vscode.Uri; total: number }>> {
+  ensureWatchers();
+  // 没有文件监视（测试替身）时每次重新列出
+  const listed = createWatcher ? (fileList ??= vscode.workspace.findFiles(COPYBOOK_GLOB, '**/{node_modules,.git,out}/**', 500)) : undefined;
+  let files: vscode.Uri[];
+  try {
+    files = await (listed ?? vscode.workspace.findFiles(COPYBOOK_GLOB, '**/{node_modules,.git,out}/**', 500));
+  } catch (e) {
+    fileList = undefined;
+    throw e;
   }
-  const files = await vscode.workspace.findFiles(COPYBOOK_GLOB, '**/{node_modules,.git,out}/**', 500);
   const out: Array<{ uri: vscode.Uri; total: number }> = [];
   const cache: MemberCache = new Map();
   const seen = new Set<string>();
-  for (const uri of files) {
+  // 先并行确认各文件（及其 COPY 原文）是否有变化，没有变化的直接使用缓存
+  const stamps = await Promise.all(files.map(fileStamp));
+  const fresh = await Promise.all(
+    files.map(async (uri, i) => {
+      const hit = scanCache.get(uri.toString());
+      return !!hit && stamps[i] !== undefined && hit.stamp === stamps[i] && (await depsUnchanged(hit.deps));
+    })
+  );
+  for (let i = 0; i < files.length; i++) {
+    const uri = files[i];
     const key = uri.toString();
     seen.add(key);
-    const stamp = await fileStamp(uri);
-    const hit = scanCache.get(key);
-    if (hit && stamp !== undefined && hit.stamp === stamp && (await depsUnchanged(hit.deps))) {
-      out.push({ uri, total: hit.total });
+    const stamp = stamps[i];
+    if (fresh[i]) {
+      out.push({ uri, total: scanCache.get(key)!.total });
       continue;
     }
     let total = -1;
@@ -170,15 +211,14 @@ export async function scanCopybooks(): Promise<Array<{ uri: vscode.Uri; total: n
 }
 
 async function depsUnchanged(deps: ScanEntry['deps']): Promise<boolean> {
-  for (const d of deps) {
-    if ((await fileStamp(d.uri)) !== d.stamp) return false;
-  }
-  return true;
+  const now = await Promise.all(deps.map((d) => fileStamp(d.uri)));
+  return now.every((s, i) => s === deps[i].stamp);
 }
 
 /** 供测试：清空 copybook 一览的缓存 */
 export function clearCopybookScanCache(): void {
   scanCache.clear();
+  fileList = undefined;
 }
 
 export async function pickCopybook(length: number, store: MappingStore, value?: string): Promise<vscode.Uri | undefined> {
@@ -187,21 +227,25 @@ export async function pickCopybook(length: number, store: MappingStore, value?: 
     browse?: boolean;
     match: boolean;
   }
-  const items: Item[] = [];
-  for (const { uri, total } of await scanCopybooks()) {
-    const match = total === length;
-    items.push({
-      label: `${match ? '$(check) ' : ''}${path.basename(uri.fsPath)}`,
-      description: vscode.workspace.asRelativePath(uri, false),
-      detail: total >= 0 ? t(match ? 'ext.cpyDetailMatch' : 'ext.cpyDetail', { n: total }) : t('ext.cpyUnparsable'),
-      uri,
-      match,
-    });
-  }
-  items.sort((a, b) => Number(b.match) - Number(a.match) || a.label.localeCompare(b.label));
-  items.push({ label: t('ext.browse'), browse: true, match: false });
+  // 把「正在扫描」的列表直接交给 showQuickPick：选择框立即出现（显示加载中），扫描完成后再填入项目
+  const itemsP = (async () => {
+    const items: Item[] = [];
+    for (const { uri, total } of await scanCopybooks()) {
+      const match = total === length;
+      items.push({
+        label: `${match ? '$(check) ' : ''}${path.basename(uri.fsPath)}`,
+        description: vscode.workspace.asRelativePath(uri, false),
+        detail: total >= 0 ? t(match ? 'ext.cpyDetailMatch' : 'ext.cpyDetail', { n: total }) : t('ext.cpyUnparsable'),
+        uri,
+        match,
+      });
+    }
+    items.sort((a, b) => Number(b.match) - Number(a.match) || a.label.localeCompare(b.label));
+    items.push({ label: t('ext.browse'), browse: true, match: false });
+    return items;
+  })();
 
-  const picked = await vscode.window.showQuickPick(items, {
+  const picked = await vscode.window.showQuickPick(itemsP, {
     title: value === undefined ? t('ext.pickTitle', { len: length }) : t('ext.pickTitleValue', { len: length, value }),
     placeHolder: t('ext.pickPlaceholder'),
     matchOnDescription: true,

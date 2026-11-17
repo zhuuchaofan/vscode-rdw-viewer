@@ -134,6 +134,7 @@ export const zh = {
   'ui.cellHint': '点击单元格，在这里显示字段值和原始字节',
   'ui.scanning': '读取中，先显示已读取的部分…',
   'ui.scanningTitle': '文件较大，正在后台读取其余部分；读取完成后条数和标签页会自动更新。导出等操作会在读取完成后执行。',
+  'ui.loading': '正在读取文件…',
   'ui.export': '导出…',
   'ui.exportTitle': '把当前标签页导出为 CSV / TSV',
   'ui.exportAll': '全部导出…',
