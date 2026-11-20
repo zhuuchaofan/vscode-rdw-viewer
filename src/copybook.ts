@@ -21,9 +21,16 @@
 import { t } from './i18n';
 import { CopyIssue, CopyLayout, LayoutSelection, CopyRecord, Copybook } from './cobol/types';
 import { Node, Directive, newNode, parseStatement } from './cobol/statement';
-import { buildLayout } from './cobol/emit';
-import { normalizeSource } from './cobol/source';
+import { buildLayout, measureLayout } from './cobol/emit';
+import { normalizeSource, splitStatements } from './cobol/source';
 import { ParseOptions, pushIssue, expandStatements, applyReplaceStatements } from './cobol/copy';
+
+const PROGRAM_DIVISION_RE = /^(?:IDENTIFICATION|PROCEDURE)\s+DIVISION\b/i;
+
+/** 判断源码是否是完整的 COBOL 程序（含 IDENTIFICATION / PROCEDURE DIVISION），供自动扫描跳过 */
+export function isCobolProgram(text: string): boolean {
+  return splitStatements(normalizeSource(text, []), []).some((st) => PROGRAM_DIVISION_RE.test(st));
+}
 
 /** 选用总长度等于记录长度的顶层定义；没有则用第一个 */
 export function selectRecord(cb: Copybook, bodyLen: number): CopyRecord | undefined {
@@ -35,7 +42,7 @@ export function layoutRecord(rec: CopyRecord, sel: LayoutSelection = {}): CopyLa
   return buildLayout(rec.root as Node, sel, rec.fileIssues);
 }
 
-export function parseCopybook(text: string, opts: ParseOptions = {}): Copybook {
+function parseTree(text: string, opts: ParseOptions = {}): { roots: Node[]; fileIssues: CopyIssue[] } {
   const fileIssues: CopyIssue[] = [];
   const roots: Node[] = [];
   const stack: Node[] = [];
@@ -100,7 +107,26 @@ export function parseCopybook(text: string, opts: ParseOptions = {}): Copybook {
     }
     stack.push(node);
   }
+  return { roots, fileIssues };
+}
 
+/** 只计算第一个有效顶层记录的总字节长度，不展开 CopyField（供工作区扫描使用） */
+export function measureCopybook(text: string, opts: ParseOptions = {}): number {
+  const { roots } = parseTree(text, opts);
+  for (const root of roots) {
+    if (root.typedef) {
+      continue;
+    }
+    const m = measureLayout(root);
+    if (m.hasFields) {
+      return m.totalLength;
+    }
+  }
+  return 0;
+}
+
+export function parseCopybook(text: string, opts: ParseOptions = {}): Copybook {
+  const { roots, fileIssues } = parseTree(text, opts);
   const records: CopyRecord[] = [];
   for (const root of roots) {
     if (root.typedef) {
@@ -109,7 +135,7 @@ export function parseCopybook(text: string, opts: ParseOptions = {}): Copybook {
     // 01 层的 REDEFINES 是同一区域的另一种记录定义，作为独立的 01 记录处理
     const layout = buildLayout(root, {}, fileIssues);
     if (layout.fields.length > 0) {
-      records.push({ name: root.name || root.children[0]?.name || 'FILLER', ...layout, root, fileIssues });
+      records.push({ name: root.name || root.children[0].name, ...layout, root, fileIssues });
     }
   }
   const warnings = [...new Set([...fileIssues, ...records.flatMap((r) => r.issues)].map((x) => x.text))];
