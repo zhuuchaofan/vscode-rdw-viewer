@@ -84,7 +84,17 @@ export function parseCopybook(text: string, opts: ParseOptions = {}): Copybook {
       stack.pop();
     }
     if (stack.length === 0) {
-      roots.push(node);
+      if (node.level > 1) {
+        // 没有 01 包住的片段 copybook（从 02~49 层开始）：补一个无名的虚拟 01 组，
+        // 让并列的顶层项连续排布，算作同一条记录
+        const root = newNode(1);
+        root.name = '';
+        roots.push(root);
+        stack.push(root);
+        root.children.push(node);
+      } else {
+        roots.push(node);
+      }
     } else {
       stack[stack.length - 1].children.push(node);
     }
@@ -99,7 +109,7 @@ export function parseCopybook(text: string, opts: ParseOptions = {}): Copybook {
     // 01 层的 REDEFINES 是同一区域的另一种记录定义，作为独立的 01 记录处理
     const layout = buildLayout(root, {}, fileIssues);
     if (layout.fields.length > 0) {
-      records.push({ name: root.name, ...layout, root, fileIssues });
+      records.push({ name: root.name || root.children[0]?.name || 'FILLER', ...layout, root, fileIssues });
     }
   }
   const warnings = [...new Set([...fileIssues, ...records.flatMap((r) => r.issues)].map((x) => x.text))];
