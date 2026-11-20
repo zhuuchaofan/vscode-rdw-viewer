@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCopybook, picInfo } from '../src/copybook';
+import { parseCopybook, layoutRecord, picInfo } from '../src/copybook';
 
 test('自由格式：X / 9 / S9 / FILLER', () => {
   const cb = parseCopybook(`
@@ -152,4 +152,183 @@ test('语句开头有无法识别的内容：跳过并提示，字段不丢失',
   const cb = parseCopybook('01 R. 05 A PIC X(2). GARBAGE 05 B PIC X(3).');
   assert.deepEqual(cb.fields.map((f) => f.name), ['A', 'B']);
   assert.ok(cb.warnings.some((w) => w.includes('GARBAGE')));
+});
+
+test('无 01 层：顶层多个并列 05 合并为同一条记录，偏移连续', () => {
+  const cb = parseCopybook(`
+    05 A PIC X(3).
+    05 B PIC 9(4).
+    05 C PIC X(2).
+  `);
+  assert.equal(cb.records.length, 1);
+  assert.equal(cb.records[0].name, 'A');
+  assert.equal(cb.totalLength, 9);
+  assert.deepEqual(
+    cb.fields.map((f) => [f.name, f.offset, f.length]),
+    [
+      ['A', 0, 3],
+      ['B', 3, 4],
+      ['C', 7, 2],
+    ]
+  );
+  assert.deepEqual(cb.warnings, []);
+});
+
+test('无 01 层：顶层多个并列 10 合并为同一条记录', () => {
+  const cb = parseCopybook(`
+    10 X1 PIC X(4).
+    10 X2 PIC 9(3).
+    10 X3 PIC X(5).
+  `);
+  assert.equal(cb.records.length, 1);
+  assert.equal(cb.records[0].name, 'X1');
+  assert.equal(cb.totalLength, 12);
+  assert.deepEqual(
+    cb.fields.map((f) => [f.name, f.offset, f.length]),
+    [
+      ['X1', 0, 4],
+      ['X2', 4, 3],
+      ['X3', 7, 5],
+    ]
+  );
+});
+
+test('无 01 层：先 10 后 05 仍归入同一虚拟 01 记录', () => {
+  const cb = parseCopybook(`
+    10 FIRST-F PIC X(2).
+    05 SECOND-G.
+       10 SUB-A PIC X(3).
+       10 SUB-B PIC 9(4).
+  `);
+  assert.equal(cb.records.length, 1);
+  assert.equal(cb.records[0].name, 'FIRST-F');
+  assert.equal(cb.totalLength, 9);
+  assert.deepEqual(
+    cb.fields.map((f) => [f.name, f.offset, f.length]),
+    [
+      ['FIRST-F', 0, 2],
+      ['SUB-A', 2, 3],
+      ['SUB-B', 5, 4],
+    ]
+  );
+});
+
+test('无 01 层：REDEFINES 正常分组且 id 无前导点', () => {
+  const cb = parseCopybook(`
+    05 HEAD PIC X(2).
+    05 BODY-A PIC X(4).
+    05 BODY-B REDEFINES BODY-A.
+       10 B1 PIC 9(2).
+       10 B2 PIC X(2).
+    05 TAIL PIC X(1).
+  `);
+  assert.equal(cb.records.length, 1);
+  assert.equal(cb.totalLength, 7);
+  const rec = cb.records[0];
+  assert.equal(rec.sets.length, 1);
+  assert.ok(!rec.sets[0].id.startsWith('.'));
+  assert.deepEqual(rec.sets[0].options, ['BODY-A', 'BODY-B']);
+  assert.deepEqual(
+    cb.fields.map((f) => [f.name, f.offset, f.length]),
+    [
+      ['HEAD', 0, 2],
+      ['BODY-A', 2, 4],
+      ['TAIL', 6, 1],
+    ]
+  );
+  const alt = layoutRecord(rec, { [rec.sets[0].id]: 'BODY-B' });
+  assert.deepEqual(
+    alt.fields.map((f) => [f.name, f.offset, f.length]),
+    [
+      ['HEAD', 0, 2],
+      ['B1', 2, 2],
+      ['B2', 4, 2],
+      ['TAIL', 6, 1],
+    ]
+  );
+  assert.equal(alt.totalLength, 7);
+});
+
+test('无 01 层：OCCURS 正常展开并与后续同级项偏移连续', () => {
+  const cb = parseCopybook(`
+    05 ITEM OCCURS 3 TIMES.
+       10 CODE PIC X(2).
+       10 QTY PIC 9(1).
+    05 TOTAL PIC 9(4).
+  `);
+  assert.equal(cb.records.length, 1);
+  assert.equal(cb.totalLength, 13);
+  assert.deepEqual(
+    cb.fields.map((f) => [f.name, f.offset, f.length]),
+    [
+      ['CODE(1)', 0, 2],
+      ['QTY(1)', 2, 1],
+      ['CODE(2)', 3, 2],
+      ['QTY(2)', 5, 1],
+      ['CODE(3)', 6, 2],
+      ['QTY(3)', 8, 1],
+      ['TOTAL', 9, 4],
+    ]
+  );
+});
+
+test('无 01 层：中途未展开 COPY 仅标后续字段为可疑', () => {
+  const cb = parseCopybook(`
+    05 BEFORE-F PIC X(3).
+    COPY MISSING-MEM.
+    05 AFTER-F PIC X(4).
+  `);
+  assert.equal(cb.records.length, 1);
+  assert.equal(cb.totalLength, 7);
+  assert.equal(cb.records[0].trust, 'untrusted');
+  assert.deepEqual(
+    cb.fields.map((f) => [f.name, f.offset, f.length, !!f.suspect]),
+    [
+      ['BEFORE-F', 0, 3, false],
+      ['AFTER-F', 3, 4, true],
+    ]
+  );
+  assert.ok(cb.warnings.some((w) => w.includes('MISSING-MEM')));
+});
+
+test('回归保护：多个 77 与多个 01 仍各自作为独立记录', () => {
+  const cb77 = parseCopybook(`
+    77 WS-A PIC X(3).
+    77 WS-B PIC 9(5).
+  `);
+  assert.deepEqual(
+    cb77.records.map((r) => [r.name, r.totalLength]),
+    [
+      ['WS-A', 3],
+      ['WS-B', 5],
+    ]
+  );
+
+  const cb01 = parseCopybook(`
+    01 REC-1.
+       05 F1 PIC X(4).
+       05 F1-ALT REDEFINES F1 PIC 9(4).
+    01 REC-2.
+       05 F2 PIC X(6).
+  `);
+  assert.deepEqual(
+    cb01.records.map((r) => [r.name, r.totalLength]),
+    [
+      ['REC-1', 4],
+      ['REC-2', 6],
+    ]
+  );
+  assert.equal(cb01.records[0].sets[0].id, 'REC-1.F1');
+});
+
+test('01 なしで 05 が 1 つだけ：REDEFINES の id とレコード名は従来どおり', () => {
+  const cb = parseCopybook(`
+    05 A.
+       10 X PIC X(3).
+       10 Y REDEFINES X PIC 9(3).
+  `);
+  assert.equal(cb.records.length, 1);
+  assert.equal(cb.records[0].name, 'A');
+  assert.equal(cb.records[0].totalLength, 3);
+  assert.equal(cb.records[0].sets[0].id, 'A.X');
 });

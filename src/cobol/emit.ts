@@ -236,7 +236,7 @@ function emit(node: Node, offset: number, idx: number[], path: string, inh: Inhe
       });
       off += p.length;
     } else {
-      off = emitChildren(node.children, off, ix, `${path}.${node.name}`, me, ctx);
+      off = emitChildren(node.children, off, ix, node.name ? `${path}.${node.name}` : path, me, ctx);
       const size = off - repStart;
       if (repAlign > 0 && size % repAlign !== 0) {
         const pad = repAlign - (size % repAlign);
