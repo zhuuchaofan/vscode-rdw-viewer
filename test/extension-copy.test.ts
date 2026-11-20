@@ -94,3 +94,48 @@ test('工作区 copybook 一览被缓存：再次打开不再重新查找 COPY �
     vscode.workspace.findFiles = origFind;
   }
 });
+
+test('自动扫描跳过完整 COBOL 程序文件（.cbl/.cob），不阻塞也不干扰自动匹配', async () => {
+  vscode.state.reset();
+  vscode.state.workspaceRoot = root;
+  // 放入一个带超大 3D OCCURS 表且首个 01 恰好为 10 字节的完整 COBOL 程序：
+  // 如果扫描不跳过，不仅会与 MAIN.cpy 冲突导致无法自动选中，展开超大表还会卡死/OOM
+  const progPath = path.join(root, 'BATCH01.cbl');
+  fs.writeFileSync(
+    progPath,
+    [
+      '       IDENTIFICATION DIVISION.',
+      '       PROGRAM-ID. BATCH01.',
+      '       DATA DIVISION.',
+      '       FILE SECTION.',
+      '       01 PROG-REC.',
+      '          05 P-KEY PIC X(10).',
+      '       WORKING-STORAGE SECTION.',
+      '       01 WS-HUGE.',
+      '          05 D1 OCCURS 1000 TIMES.',
+      '             10 D2 OCCURS 1000 TIMES.',
+      '                15 D3 OCCURS 20 TIMES.',
+      '                   20 F1 PIC X(4).',
+      '       PROCEDURE DIVISION.',
+      '           STOP RUN.',
+    ].join('\n')
+  );
+  try {
+    const provider = vscode.state.providers.get(ext.EDITOR_VIEW_TYPE) as {
+      openCustomDocument(u: unknown, c: unknown, t: unknown): Promise<{ dispose(): void }>;
+      resolveCustomEditor(d: unknown, p: unknown, t: unknown): Promise<void>;
+    };
+    const doc = await provider.openCustomDocument(vscode.Uri.file(path.join(root, 'data.dat')), {}, { isCancellationRequested: false });
+    const panel = new vscode.FakePanel();
+    await provider.resolveCustomEditor(doc, panel, {});
+    await panel.receive({ type: 'ready' });
+    const init = panel.posted.find((m) => m.type === 'init') as unknown as {
+      groups: Array<{ copybookName: string | null }>;
+    };
+    // BATCH01.cbl 被跳过，长度 10 的唯一候选仍是 MAIN.cpy
+    assert.equal(init.groups[0].copybookName, 'MAIN.cpy');
+    doc.dispose();
+  } finally {
+    fs.rmSync(progPath, { force: true });
+  }
+});

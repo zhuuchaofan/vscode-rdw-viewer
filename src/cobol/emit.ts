@@ -66,12 +66,18 @@ function syncBoundary(usage: string, digits: number): number {
 }
 
 interface EmitCtx {
-  out: CopyField[];
+  /** null 表示只测量长度（不生成 CopyField，按 OCCURS 乘法 O(AST) 计算） */
+  out: CopyField[] | null;
+  hasFields: boolean;
   sets: RedefineSet[];
   sel: LayoutSelection;
   issues: CopyIssue[];
   /** OCCURS DEPENDING ON 表的结束位置（全部展开后再判断后面有没有字段） */
   odo: Array<{ name: string; end: number }>;
+}
+
+function alignPad(offset: number, boundary: number): number {
+  return boundary > 0 && offset % boundary !== 0 ? boundary - (offset % boundary) : 0;
 }
 
 /** 记录问题：同一问题只记一次，位置取最靠前的 */
@@ -111,6 +117,10 @@ function maxBoundary(node: Node, inh: Inherited): number {
 
 /** 编译器插入的填充字节（遊びバイト）：作为隐含的 FILLER 显示 */
 function pushSlack(ctx: EmitCtx, offset: number, length: number): void {
+  ctx.hasFields = true;
+  if (!ctx.out) {
+    return;
+  }
   ctx.out.push({
     name: 'FILLER',
     pic: `X(${length})`,
@@ -150,27 +160,34 @@ function emitBits(run: Node[], offset: number, idx: number[], inh: Inherited, ct
     if (node.aligned && bit % 8 !== 0) {
       bit += 8 - (bit % 8);
     }
-    for (let r = 1; r <= node.occurs; r++) {
-      const ix = node.occurs > 1 ? [...idx, r] : idx;
-      const start = Math.floor(bit / 8);
-      const end = Math.ceil((bit + n) / 8);
+    if (node.occurs > 0) {
+      ctx.hasFields = true;
       addIssue(ctx, { level: 'value', text: t('cpy.bit', { name: node.name }) });
-      ctx.out.push({
-        name: node.name + (ix.length ? `(${ix.join(',')})` : ''),
-        pic: `${node.pic ?? ''} BIT`.trim(),
-        offset: offset + start,
-        length: Math.max(1, end - start),
-        type: 'bin',
-        signed: false,
-        usage: me.usage,
-        scale: 0,
-        digits: 0,
-        signSeparate: false,
-        signLeading: false,
-        bitOffset: bit - start * 8,
-        bits: n,
-      });
-      bit += n;
+    }
+    if (!ctx.out) {
+      bit += n * node.occurs;
+    } else {
+      for (let r = 1; r <= node.occurs; r++) {
+        const ix = node.occurs > 1 ? [...idx, r] : idx;
+        const start = Math.floor(bit / 8);
+        const end = Math.ceil((bit + n) / 8);
+        ctx.out.push({
+          name: node.name + (ix.length ? `(${ix.join(',')})` : ''),
+          pic: `${node.pic ?? ''} BIT`.trim(),
+          offset: offset + start,
+          length: Math.max(1, end - start),
+          type: 'bin',
+          signed: false,
+          usage: me.usage,
+          scale: 0,
+          digits: 0,
+          signSeparate: false,
+          signLeading: false,
+          bitOffset: bit - start * 8,
+          bits: n,
+        });
+        bit += n;
+      }
     }
     if (node.odo) {
       ctx.odo.push({ name: node.name, end: offset + Math.ceil(bit / 8) });
@@ -180,13 +197,15 @@ function emitBits(run: Node[], offset: number, idx: number[], inh: Inherited, ct
 }
 
 /**
- * 展开一个项目，返回结束偏移。
+ * 展开（或仅测量）一个项目，返回结束偏移。
  *
  * SYNC 的填充字节按 NetCOBOL 文法書 1.3.5.1 插入（偏移从记录开头算起，01 从 8 字节边界开始）：
  *  1. 需要对齐的项目前面是基本项目时，填充放在它的紧前面；
  *  2. 需要对齐的项目是组项目的第一个项目时，填充放在「前面是基本项目」的最内层的那个组项目前面
  *     （不计入内层组项目的大小）。leading=true 表示这个项目是所在组的第一个项目，由上层负责对齐；
  *  3. 带 OCCURS 的组项目中有需要对齐的项目时，每次重复的末尾补齐到其中最大边界的倍数。
+ *     因为固有边界都是 2 的幂（2/4/8），单次重复补齐后起始偏移对所有下级边界同余，
+ *     所以仅测量时只需计算一次重复再乘以 occurs。
  */
 function emit(node: Node, offset: number, idx: number[], path: string, inh: Inherited, ctx: EmitCtx, leading = false): number {
   for (const is of node.issues) {
@@ -206,42 +225,66 @@ function emit(node: Node, offset: number, idx: number[], path: string, inh: Inhe
   }
   let off = offset;
   const lead = leadBoundary(node, inh);
-  if (lead > 0 && off % lead !== 0 && (!leading || elementary)) {
-    const pad = lead - (off % lead);
-    pushSlack(ctx, off, pad);
-    off += pad;
+  const leadPad = !leading || elementary ? alignPad(off, lead) : 0;
+  if (leadPad > 0) {
+    pushSlack(ctx, off, leadPad);
+    off += leadPad;
   }
-  const repAlign = !elementary && node.occurs > 1 ? maxBoundary(node, inh) : 0;
-  for (let r = 1; r <= node.occurs; r++) {
-    const ix = node.occurs > 1 ? [...idx, r] : idx;
-    const repStart = off;
-    if (elementary) {
-      const p = picInfo(node.pic ?? '', me.usage, me.sign.separate, node.intSigned);
-      const picText = node.pic ?? '';
+  if (elementary) {
+    const p = picInfo(node.pic ?? '', me.usage, me.sign.separate, node.intSigned);
+    if (node.occurs > 0) {
+      ctx.hasFields = true;
       if (me.usage === 'INDEX' || me.usage === 'POINTER') {
         addIssue(ctx, { level: 'layout', text: t('cpy.pointer', { name: node.name, usage: me.usage }), from: off });
       }
-      ctx.out.push({
-        name: node.name + (ix.length ? `(${ix.join(',')})` : ''),
-        pic: p.type === 'bin' ? `${picText} ${me.usage}`.trim() : picText,
-        offset: off,
-        length: p.length,
-        type: p.type,
-        signed: p.signed,
-        usage: me.usage,
-        scale: p.scale,
-        digits: p.digits,
-        signSeparate: p.signed && me.sign.separate,
-        signLeading: p.signed && me.sign.leading,
-      });
-      off += p.length;
+    }
+    if (!ctx.out) {
+      off += p.length * node.occurs;
     } else {
-      off = emitChildren(node.children, off, ix, node.name ? `${path}.${node.name}` : path, me, ctx);
-      const size = off - repStart;
-      if (repAlign > 0 && size % repAlign !== 0) {
-        const pad = repAlign - (size % repAlign);
+      const picText = node.pic ?? '';
+      const picLabel = p.type === 'bin' ? `${picText} ${me.usage}`.trim() : picText;
+      for (let r = 1; r <= node.occurs; r++) {
+        const ix = node.occurs > 1 ? [...idx, r] : idx;
+        ctx.out.push({
+          name: node.name + (ix.length ? `(${ix.join(',')})` : ''),
+          pic: picLabel,
+          offset: off,
+          length: p.length,
+          type: p.type,
+          signed: p.signed,
+          usage: me.usage,
+          scale: p.scale,
+          digits: p.digits,
+          signSeparate: p.signed && me.sign.separate,
+          signLeading: p.signed && me.sign.leading,
+        });
+        off += p.length;
+      }
+    }
+  } else {
+    const repAlign = node.occurs > 1 ? maxBoundary(node, inh) : 0;
+    const childPath = node.name ? `${path}.${node.name}` : path;
+    if (!ctx.out) {
+      const repStart = off;
+      off = emitChildren(node.children, off, idx, childPath, me, ctx);
+      const pad = alignPad(off - repStart, repAlign);
+      if (pad > 0) {
         pushSlack(ctx, off, pad);
         off += pad;
+      }
+      if (node.occurs > 1) {
+        off = repStart + (off - repStart) * node.occurs;
+      }
+    } else {
+      for (let r = 1; r <= node.occurs; r++) {
+        const ix = node.occurs > 1 ? [...idx, r] : idx;
+        const repStart = off;
+        off = emitChildren(node.children, off, ix, childPath, me, ctx);
+        const pad = alignPad(off - repStart, repAlign);
+        if (pad > 0) {
+          pushSlack(ctx, off, pad);
+          off += pad;
+        }
       }
     }
   }
@@ -279,21 +322,23 @@ function emitChildren(children: Node[], offset: number, idx: number[], path: str
       continue;
     }
     // REDEFINES：原项目按通常的规则对齐；重定义项目从同一位置开始（对齐由编写者负责，编译器不插入填充）
-    const lead = first ? 0 : leadBoundary(slot[0], inh);
-    if (lead > 0 && off % lead !== 0) {
-      const pad = lead - (off % lead);
-      pushSlack(ctx, off, pad);
-      off += pad;
+    const leadPad = first ? 0 : alignPad(off, leadBoundary(slot[0], inh));
+    if (leadPad > 0) {
+      pushSlack(ctx, off, leadPad);
+      off += leadPad;
     }
     first = false;
-    // 只展开选中的布局；区域大小取各布局实际展开后的最大值（含填充），未选中布局中的问题也会影响区域大小
+    // 只展开选中的布局；未选中布局只测量长度与问题（不分配 CopyField），区域大小取各布局最大值
     const id = `${path}.${slot[0].name}`.replace(/^\./, '');
     const chosen = slot.find((c) => sameName(ctx.sel[id], c.name)) ?? slot[0];
     // 外层区域先登记（列表按出现顺序），长度在各布局展开后确定
-    let set = ctx.sets.find((x) => x.id === id);
-    if (!set) {
-      set = { id, base: slot[0].name, options: slot.map((c) => c.name), offset: off, length: 0 };
-      ctx.sets.push(set);
+    let set: RedefineSet | undefined;
+    if (ctx.out) {
+      set = ctx.sets.find((x) => x.id === id);
+      if (!set) {
+        set = { id, base: slot[0].name, options: slot.map((c) => c.name), offset: off, length: 0 };
+        ctx.sets.push(set);
+      }
     }
     let end = off;
     for (const c of slot) {
@@ -301,12 +346,14 @@ function emitChildren(children: Node[], offset: number, idx: number[], path: str
         end = Math.max(end, emit(c, off, idx, path, inh, ctx, true));
         continue;
       }
-      const hidden: EmitCtx = { out: [], sets: [], sel: ctx.sel, issues: [], odo: [] };
+      const hidden: EmitCtx = { out: null, hasFields: false, sets: [], sel: ctx.sel, issues: [], odo: [] };
       end = Math.max(end, emit(c, off, idx, path, inh, hidden, true));
       hidden.issues.filter((x) => x.level === 'layout').forEach((x) => addIssue(ctx, { ...x, from: off }));
       hidden.odo.forEach((o) => addIssue(ctx, { level: 'layout', text: t('cpy.odoLayout', { name: o.name }), from: off }));
     }
-    set.length = Math.max(set.length, end - off);
+    if (set) {
+      set.length = Math.max(set.length, end - off);
+    }
     off = end;
   }
   return off;
@@ -319,8 +366,16 @@ function trustOf(issues: CopyIssue[]): Trust {
   return issues.some((x) => x.level !== 'info') ? 'partial' : 'ok';
 }
 
+/** 只计算记录的总字节长度与是否包含字段，不分配 CopyField（O(AST 节点数)） */
+export function measureLayout(root: Node, sel: LayoutSelection = {}): { totalLength: number; hasFields: boolean } {
+  const ctx: EmitCtx = { out: null, hasFields: false, sets: [], sel, issues: [], odo: [] };
+  const totalLength = emit(root, 0, [], '', ROOT_INHERITED, ctx, true);
+  return { totalLength, hasFields: ctx.hasFields };
+}
+
 export function buildLayout(root: Node, sel: LayoutSelection, fileIssues: CopyIssue[]): CopyLayout {
-  const ctx: EmitCtx = { out: [], sets: [], sel, issues: [], odo: [] };
+  const out: CopyField[] = [];
+  const ctx: EmitCtx = { out, hasFields: false, sets: [], sel, issues: [], odo: [] };
   const totalLength = emit(root, 0, [], '', ROOT_INHERITED, ctx, true);
   // OCCURS DEPENDING ON：后面还有字段时，那些字段的位置随实际次数变化；在记录末尾时只有超出实际次数的部分无效
   for (const o of ctx.odo) {
@@ -334,8 +389,8 @@ export function buildLayout(root: Node, sel: LayoutSelection, fileIssues: CopyIs
   // 第一个位置可能不对的地方之后的字段都标为可疑
   const froms = ctx.issues.filter((x) => x.level === 'layout').map((x) => x.from ?? 0);
   const firstBad = froms.length > 0 ? Math.min(...froms) : Infinity;
-  for (const f of ctx.out) {
+  for (const f of out) {
     if (f.offset >= firstBad) f.suspect = true;
   }
-  return { fields: ctx.out, totalLength, sets: ctx.sets, issues: ctx.issues, trust: trustOf(ctx.issues) };
+  return { fields: out, totalLength, sets: ctx.sets, issues: ctx.issues, trust: trustOf(ctx.issues) };
 }

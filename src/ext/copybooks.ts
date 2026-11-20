@@ -2,7 +2,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { t } from '../i18n';
-import { parseCopybook, copyReferences, Copybook, CopyMember } from '../copybook';
+import { parseCopybook, measureCopybook, isCobolProgram, copyReferences, Copybook, CopyMember, MemberResolver } from '../copybook';
 import { memberFileNames, pickMember } from '../copyresolve';
 import { MappingStore } from './mapping';
 
@@ -74,9 +74,13 @@ function resolveMember(
   return hit;
 }
 
-/** 读取 copybook，事先找到并读取其中（含嵌套的）COPY 引用的登録集原文，然后解析 */
-export async function loadCopybook(uri: vscode.Uri, cache: MemberCache = new Map(), deps?: CopyDeps): Promise<Copybook> {
-  const text = decodeCopybookText(await vscode.workspace.fs.readFile(uri));
+/** 查找并读取（含嵌套的）COPY 引用的登録集原文，返回供解析器使用的解析函数 */
+async function resolveCopyMembers(
+  text: string,
+  uri: vscode.Uri,
+  cache: MemberCache,
+  deps?: CopyDeps
+): Promise<MemberResolver> {
   const baseDir = vscode.Uri.joinPath(uri, '..');
   const keyOf = (name: string, library?: string) => `${(library ?? '').toUpperCase()}|${name.toUpperCase()}`;
   const members = new Map<string, CopyMember>();
@@ -96,7 +100,14 @@ export async function loadCopybook(uri: vscode.Uri, cache: MemberCache = new Map
       deps.unresolved = true;
     }
   }
-  return parseCopybook(text, { resolve: (name, library) => members.get(keyOf(name, library)) });
+  return (name, library) => members.get(keyOf(name, library));
+}
+
+/** 读取 copybook，事先找到并读取其中（含嵌套的）COPY 引用的登録集原文，然后解析 */
+export async function loadCopybook(uri: vscode.Uri, cache: MemberCache = new Map(), deps?: CopyDeps): Promise<Copybook> {
+  const text = decodeCopybookText(await vscode.workspace.fs.readFile(uri));
+  const resolve = await resolveCopyMembers(text, uri, cache, deps);
+  return parseCopybook(text, { resolve });
 }
 
 /** 文件的「版本」：修改时间与大小；取不到时为 undefined */
@@ -115,6 +126,8 @@ interface ScanEntry {
   deps: Array<{ uri: vscode.Uri; stamp: string | undefined }>;
   /** 有找不到的 COPY：工作区新建文件后要重新解析（可能找得到了） */
   unresolved: boolean;
+  /** 完整 COBOL 程序文件（含 IDENTIFICATION / PROCEDURE DIVISION），自动扫描跳过 */
+  skipped?: boolean;
   total: number;
 }
 
@@ -126,7 +139,7 @@ interface ScanEntry {
 const scanCache = new Map<string, ScanEntry>();
 let createWatcher: vscode.Disposable | undefined;
 
-/** 工作区中的 copybook 及其总长度（无法解析的为 -1） */
+/** 工作区中的 copybook 及其总长度（无法解析的为 -1；完整 COBOL 程序跳过） */
 export async function scanCopybooks(): Promise<Array<{ uri: vscode.Uri; total: number }>> {
   if (!createWatcher && vscode.workspace.createFileSystemWatcher) {
     // 新建的文件可能就是之前找不到的 COPY 原文，也可能改变同名原文的选择
@@ -146,23 +159,30 @@ export async function scanCopybooks(): Promise<Array<{ uri: vscode.Uri; total: n
     const stamp = await fileStamp(uri);
     const hit = scanCache.get(key);
     if (hit && stamp !== undefined && hit.stamp === stamp && (await depsUnchanged(hit.deps))) {
-      out.push({ uri, total: hit.total });
+      if (!hit.skipped) out.push({ uri, total: hit.total });
       continue;
     }
     let total = -1;
+    let skipped = false;
     const deps: CopyDeps = { uris: [], unresolved: false };
     try {
-      total = (await loadCopybook(uri, cache, deps)).totalLength;
+      const text = decodeCopybookText(await vscode.workspace.fs.readFile(uri));
+      if (isCobolProgram(text)) {
+        skipped = true;
+      } else {
+        const resolve = await resolveCopyMembers(text, uri, cache, deps);
+        total = measureCopybook(text, { resolve });
+      }
     } catch {
       /* 读不了就当长度未知 */
     }
     if (stamp !== undefined) {
       const depStamps = await Promise.all(deps.uris.map(async (u) => ({ uri: u, stamp: await fileStamp(u) })));
-      scanCache.set(key, { stamp, deps: depStamps, unresolved: deps.unresolved, total });
+      scanCache.set(key, { stamp, deps: depStamps, unresolved: deps.unresolved, skipped, total });
     } else {
       scanCache.delete(key);
     }
-    out.push({ uri, total });
+    if (!skipped) out.push({ uri, total });
   }
   // 已经不在工作区中的文件
   for (const k of [...scanCache.keys()]) if (!seen.has(k)) scanCache.delete(k);
